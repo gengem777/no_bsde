@@ -12,18 +12,71 @@ class TestMarkovianSolver(tf.test.TestCase):
         option = EuropeanOption(config)
         markov_model = BSDEMarkovianModel(sde, option, config)
         # train phase
-        markov_model.train(5)
+        markov_model.train(10)
         # validate phase
         markov_model.pre_setting()
-        data_generator = DiffusionModelGenerator(sde, config, option)
+        data_generator = DiffusionModelGenerator(sde, config, option, 20)
         inputs = data_generator.__getitem__(1)
         with tf.GradientTape() as tape:
             _, loss, _, _ = markov_model.model(inputs[0])
                 # tf.print(loss, loss_int, loss_tml)
-            loss = tf.reduce_mean(loss)
-            grad = tape.gradient(loss, markov_model.model.trainable_variables)
-        print(grad)
-        print(loss)
+            l = tf.reduce_mean(loss)
+            grad = tape.gradient(l, markov_model.model.trainable_variables)
+        norm = 0.0
+        N = 0
+        for g in grad:
+            norm = norm + tf.reduce_sum(g**2)
+            N = N + tf.reduce_sum(g**2) / tf.reduce_mean(g**2)
+        norm = tf.math.sqrt(norm)/N
+        self.assertAllLessEqual(norm, 1e-3)
+    
+    def test_cev_european(self):
+        config = Config()
+        sde = CEVModel(config)
+        option = EuropeanOption(config)
+        markov_model = BSDEMarkovianModel(sde, option, config)
+        # train phase
+        markov_model.train(10)
+        # validate phase
+        markov_model.pre_setting()
+        data_generator = DiffusionModelGenerator(sde, config, option, 20)
+        inputs = data_generator.__getitem__(1)
+        with tf.GradientTape() as tape:
+            _, loss, _, _ = markov_model.model(inputs[0])
+                # tf.print(loss, loss_int, loss_tml)
+            l = tf.reduce_mean(loss)
+            grad = tape.gradient(l, markov_model.model.trainable_variables)
+        norm = 0.0
+        N = 0
+        for g in grad:
+            norm = norm + tf.reduce_sum(g**2)
+            N = N + tf.reduce_sum(g**2) / tf.reduce_mean(g**2)
+        norm = tf.math.sqrt(norm)/N
+        self.assertAllLessEqual(norm, 1e-3)
+    
+    def test_sv_european(self):
+        config = Config()
+        sde = HestonModel(config)
+        option = EuropeanOption(config)
+        markov_model = BSDEMarkovianModel(sde, option, config)
+        # train phase
+        markov_model.train(10)
+        # validate phase
+        markov_model.pre_setting()
+        data_generator = DiffusionModelGenerator(sde, config, option, 20)
+        inputs = data_generator.__getitem__(1)
+        with tf.GradientTape() as tape:
+            _, loss, _, _ = markov_model.model(inputs[0])
+                # tf.print(loss, loss_int, loss_tml)
+            l = tf.reduce_mean(loss)
+            grad = tape.gradient(l, markov_model.model.trainable_variables)
+        norm = 0.0
+        N = 0
+        for g in grad:
+            norm = norm + tf.reduce_sum(g**2)
+            N = N + tf.reduce_sum(g**2) / tf.reduce_mean(g**2)
+        norm = tf.math.sqrt(norm)/N
+        self.assertAllLessEqual(norm, 1e-3)
 
 
 
