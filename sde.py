@@ -408,8 +408,8 @@ class CEVModel(ItoProcessDriver):
         # self.beta1_range = [0.02, 0.05]
         # self.beta2_range = [0.03, 0.05]
         self.r_range = [0.01, 0.1]
-        self.sigma_range = [0.02, 0.80]
-        self.gamma_range = [-2.0, 1.0]
+        self.sigma_range = [0.02, 0.08]
+        self.gamma_range = [0.2, 2.0]
         self.range_list = [self.r_range, self.sigma_range, self.gamma_range]
 
     # region

@@ -7,14 +7,14 @@ import math
 class BaseGenerator(tf.keras.utils.Sequence):
     """ Create batches of random points for the network training. """
 
-    def __init__(self, sde, config, option):
+    def __init__(self, sde, config, option, N: int=100):
         """ Initialise the generator by saving the batch size. """
         self.batch_size = config.batch_size
         self.config = config
         self.option = option
         self.sde = sde
-        self.params_model = self.sde.sample_parameters(N=100)
-        self.params_option = self.option.sample_parameters(N=100)
+        self.params_model = self.sde.sample_parameters(N)
+        self.params_option = self.option.sample_parameters(N)
         # self.params = tf.concat([self.params_model, self.params_option], 1)
         self.time_steps = int(self.config.T / self.config.dt)
         time_stamp = tf.range(0, self.config.T, self.config.dt)
@@ -32,8 +32,8 @@ class BaseGenerator(tf.keras.utils.Sequence):
 class DiffusionModelGenerator(BaseGenerator):
     """ Create batches of random points for the network training. """
 
-    def __init__(self, sde, config, option):
-        super(DiffusionModelGenerator, self).__init__(sde, config, option)
+    def __init__(self, sde, config, option, N: int):
+        super(DiffusionModelGenerator, self).__init__(sde, config, option, N)
 
     def __getitem__(self, idx: int):
         """

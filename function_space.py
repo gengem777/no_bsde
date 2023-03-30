@@ -26,8 +26,8 @@ class DeepONet(tf.keras.Model):
         The input of state can be either 3-dim or 4-dim but once fixed a problem the
         dimension of the input tensor is fixed.
         """
-        time_tensor, state_tensor, parmeter_tensor = inputs
-        br = self.branch(parmeter_tensor)
+        time_tensor, state_tensor, u_tensor = inputs
+        br = self.branch(u_tensor)
         tr = self.trunk(tf.concat([time_tensor, state_tensor], -1))
         value = tf.math.reduce_sum(br * tr, axis=-1, keepdims=True)
         return value
@@ -40,6 +40,35 @@ class DeepONet(tf.keras.Model):
         grad = t.gradient(out, state_tensor)
         del t
         return grad
+
+class DeepONetwithPI(DeepONet):
+    def __init__(self, branch_layer: List[int], trunk_layer: List[int], pi_layer: List[int], num_assets: int=5):
+        self.num_assets = num_assets
+        super(DeepONetwithPI, self).__init__(branch_layer, trunk_layer)
+        self.PI_layers = tf.keras.Sequential(layers=[PermutationInvariantLayer(m) for m in pi_layer], name='pi layers')
+    
+    def reshape_state(self, state: tf.Tensor):
+        state_shape = tf.shape(state)
+        dim = state_shape[-1]
+        num_markov = int(dim/self.num_assets)
+        return tf.reshape(state, [state_shape[0], \
+                        state_shape[1], state_shape[2], self.num_assets, num_markov])
+
+        
+    def call(self, inputs: Tuple[tf.Tensor], training=None) -> tf.Tensor:
+        time_tensor, state_tensor, u_tensor = inputs
+        # state tensor is a multiple thing if each asset associated with more than 1 variable
+        # For example 
+        # under SV model we have state {(S_1, v_1), ..., (S_d, v_d)}, 
+        # then the dimension of the state is (B, M, N, d, 2)
+        # under SV for Asian option state is {(S_1, v_1, I_1), ..., (S_d, v_d, I_d)}, 
+        # then the dimension of the state is (B, M, N, d, 3)
+        # first we need to make (B, M, N, d * 2) to (B, M, N, d, 2)
+        state_tensor = self.reshape_state(state_tensor)
+        state_before_pi = self.PI_layers(state_tensor)
+        state_after_pi  = tf.reduce_mean(state_before_pi, axis=-2)
+        inputs_for_deeponet = time_tensor, state_after_pi, u_tensor
+        return super(DeepONetwithPI, self).call(inputs_for_deeponet)
 
 
 class DeepONetPath(tf.keras.Model):
@@ -67,7 +96,7 @@ class DeepONetPath(tf.keras.Model):
 
     def grad(self, inputs: Tuple[tf.Tensor]) -> tf.Tensor:
         _, state_tensor, _, _ = inputs
-        with tf.GradientTape(watch_accessed_variables=True) as t:
+        with tf.GradientTape(watch_accessed_variables=False) as t:
             t.watch(state_tensor)
             out = self.call(inputs, training=False)
         grad = t.gradient(out, state_tensor)
@@ -105,3 +134,75 @@ class DenseNet(tf.keras.Model):
             x = self.dense_layers[i](x)
             x = tf.nn.relu(x)
         return x
+
+
+class PermutationInvariantLayer(tf.keras.layers.Layer):
+  def __init__(self, num_outputs):
+    '''
+    permutation invariant layer for 2-D vector, it is only invariant for the dimension 
+    of the stock but for dimension of each asset it is just a FNN. Then the function
+    \varphi(x) is approximated by the conv1d layers.
+    input_dim[-2] is the dim of stocks, input_dim[-1] is the dim of info in each stock
+    eg: [128, 5, 2] means there are 5 stocks with each stocks having price and volatility data
+    '''
+    super(PermutationInvariantLayer, self).__init__()
+    self.num_outputs = num_outputs
+  
+  def build(self, input_shape):
+    self.kernel = self.add_weight("kernel",
+                                  shape=[int(input_shape[-1]),
+                                         self.num_outputs])
+    
+    self.bias = self.add_weight("bias",
+                                  shape=[self.num_outputs,
+                                        ])
+    
+  def call(self, inputs):
+    output = tf.einsum('...ij,jk->...ik', inputs, self.kernel) + self.bias 
+    return output
+
+# region
+# class PermutationInvariantLayer(tf.keras.layers.Layer):
+#   def __init__(self, num_outputs):
+#     '''
+#     permutation invariant layer for 2-D vector, it is only invariant for the dimension 
+#     of the stock but for dimension of each asset it is just a FNN. Then the function
+#     \varphi(x) is approximated by the conv1d layers.
+#     '''
+#     super(PermutationInvariantLayer, self).__init__()
+#     self.num_outputs = num_outputs
+  
+#   def build(self, input_shape):
+#     self.conv1d_layer = tf.keras.layers.Conv1D(filters=5, kernel_size=3, padding='same',input_shape=input_shape[-2:])
+
+#   def call(self, inputs):
+#     output = self.conv1d_layer(inputs)
+#     return tf.reduce_mean(output, axis=-2)
+# endregion
+  
+if __name__ == "__main__":
+    import numpy as np
+    inputs = tf.keras.layers.Input(shape=(None, None, 3,4))
+    pi_layer_1= PermutationInvariantLayer(5)
+    pi_layer_2= PermutationInvariantLayer(3)
+    pp = pi_layer_2(pi_layer_1(inputs))
+    x = np.array([[[[[1.,2.,3.,4.], [4.,3.,2.,1.], [3.,5.,4.,6.]], [[5.,4.,3.,2.], [2.,3.,4.,5.], [3.,5.,4.,6.]]]]])
+    x_pi = np.array([[[[[4.,3.,2.,1.], [3.,5.,4.,6.], [1.,2.,3.,4.]], [[2.,3.,4.,5.], [3.,5.,4.,6.], [5.,4.,3.,2.]]]]])
+    x = tf.tile(x, [2, 1, 1, 1, 1])
+    x = tf.tile(x, [1, 2, 1, 1, 1])
+    y = pi_layer_2(pi_layer_1(x))
+    y_pi = pi_layer_2(pi_layer_1(x_pi))
+    print(y)
+    print(y_pi)
+    model = tf.keras.Model(inputs=inputs, outputs=pp)
+    print(model(x))
+    print(model(x_pi))
+    deeponet = DeepONetwithPI([3,3], [3,3], [6, 6], 10)
+    assets = tf.random.normal([1, 1, 1, 30])
+    t = tf.random.uniform([1, 1, 1, 1])
+    u_hat = tf.random.normal([1, 1, 1, 4])
+    y = deeponet((t, assets, u_hat))
+    print(y)
+
+
+

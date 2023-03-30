@@ -66,7 +66,7 @@ class MarkovianSolver(BaseBSDESolver):
         loss = loss_int + loss_tml
         return f_now, loss, loss_int, loss_tml
 
-    @tf.function
+    # @tf.function
     def train_step(self, inputs: Tuple[tf.Tensor]) -> dict:
         with tf.GradientTape() as tape:
             with tf.name_scope('calling_model'):
@@ -83,13 +83,10 @@ class MarkovianSolver(BaseBSDESolver):
                 "loss terminal": loss_tml}
                 # "price error": error}
     
-    def grad(self, inputs):
-        with tf.GradientTape() as tape:
-            _, loss, _, _ = self(inputs[0])
-                # tf.print(loss, loss_int, loss_tml)
-            loss = tf.reduce_mean(loss)
-            grad = tape.gradient(loss, self.trainable_variables)
-        return loss, grad
+    def loss(self, inputs):
+        _, loss, _, _ = self(inputs[0])
+        loss = tf.reduce_mean(loss)
+        return loss
 
     def h_tf(self, t: tf.Tensor, x: tf.Tensor, y: tf.Tensor, param: tf.Tensor) -> tf.Tensor:  # get h function
         """
@@ -132,12 +129,14 @@ class BSDEMarkovianModel:
         )
         Optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule, epsilon=1e-6)
         self.model = MarkovianSolver(self.sde, self.option, self.config)
-        self.data_generator = DiffusionModelGenerator(self.sde, self.config, self.option)
+        self.data_generator = DiffusionModelGenerator(self.sde, self.config, self.option, 100)
+        self.val_generator = DiffusionModelGenerator(self.sde, self.config, self.option, 20)
         self.model.compile(optimizer=Optimizer)
 
     def train(self, nr_epochs: int):
         self.pre_setting()
-        self.model.fit(x=self.data_generator, epochs=nr_epochs)
+        history = self.model.fit(x=self.data_generator, epochs=nr_epochs, validation_data = self.val_generator)
+        return history
 
     def grad_norm(self):
         self.model

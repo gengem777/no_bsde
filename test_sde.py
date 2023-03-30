@@ -242,7 +242,7 @@ class TestCEVModel(tf.test.TestCase):
         u_hat = tf.constant([[0.03, 0.04, -0.05],[0.03, 0.05, 0.06]])
         dim = config.dim
         s,_ = sde.sde_simulation(u_hat, config.M)
-        s_exp = tf.reduce_mean(s[:, :, -1, :dim], axis=1) * tf.exp(-0.03)
+        s_exp = tf.reduce_mean(s[:, :, -1, :dim], axis=1) * tf.exp(-0.03 * config.T)
         s_init = tf.reduce_mean(s[:, :, 0, :dim], axis=1)
         self.assertAllLessEqual(tf.reduce_mean(tf.abs(s_init - s_exp)), 1e-2)
 
