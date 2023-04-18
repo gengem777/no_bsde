@@ -33,28 +33,24 @@ class ItoProcessDriver(ABC):
         batch_size = self.get_batch_size(u_hat)
         dimension = self.config.dim
         samples = self.config.M
-        if dimension == 1:
-            if self.initial_mode == 'random':
-                dist = tfp.distributions.TruncatedNormal(loc=self.initial_value * 1.5,
-                                                         scale=self.initial_value * 0.2,
-                                                         low=0.5,
-                                                         high=3.0)
-                state = tf.reshape(dist.sample(batch_size * samples * dimension), [batch_size, samples, dimension])
+        # if dimension == 1:
+        dist = tfp.distributions.TruncatedNormal(loc=self.initial_value,
+                                                        scale=self.initial_value * 0.1,
+                                                        low=self.initial_value * 0.8,
+                                                        high=self.initial_value * 1.3)
+        if self.initial_mode == 'random':
+            state = tf.reshape(dist.sample(batch_size * samples * dimension), [batch_size, samples, dimension])
 
-            elif self.initial_mode == 'fixed':
-                state = self.initial_value * tf.ones(shape=(batch_size, samples, dimension))
+        elif self.initial_mode == 'fixed':
+            state = self.initial_value * tf.ones(shape=(batch_size, samples, dimension))
 
-            elif self.initial_mode == 'partial_fixed':
-                dist = tfp.distributions.TruncatedNormal(loc=self.initial_value * 1.5,
-                                                         scale=self.initial_value * 0.2,
-                                                         low=0.5,
-                                                         high=3.0)
-                state = tf.reshape(dist.sample(batch_size * dimension), [batch_size, 1, dimension])
-                state = tf.tile(state, [1, samples, 1])
+        elif self.initial_mode == 'partial_fixed':
+            state = tf.reshape(dist.sample(batch_size), [batch_size, 1, 1])
+            state = tf.tile(state, [1, samples, dimension])
 
-        else:
-            dist = tfp.distributions.Dirichlet([self.initial_value] * dimension)
-            state = dist.sample([batch_size, samples]) * tf.cast(dimension, dtype=tf.float32)
+        # else:
+        #     dist = tfp.distributions.Dirichlet([self.initial_value] * dimension)
+        #     state = dist.sample([batch_size, samples]) * tf.cast(dimension, dtype=tf.float32)
 
         return state
     
@@ -82,14 +78,6 @@ class ItoProcessDriver(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def euler_maryama_step(self, state_t: tf.Tensor, u_hat: tf.Tensor):
-        raise NotImplementedError
-
-    @abstractmethod
-    def sde_simulation(self, u_hat: tf.Tensor, samples: int):
-        raise NotImplementedError
-
-    @abstractmethod
     def diffusion_onestep(self, time_tensor: tf.Tensor, state_tensor: tf.Tensor, u_hat: tf.Tensor):
         """
         get \sigma(t,X) with shape (B,M,N,d)
@@ -103,6 +91,29 @@ class ItoProcessDriver(ABC):
         """
         rate_tensor = tf.expand_dims(u_hat[..., 0], -1)
         return rate_tensor * state_tensor
+
+    def corr_matrix(self, state: tf.Tensor, u_hat: tf.Tensor):
+        """
+        In base class the corr is just identity matrix
+        """
+        batch = u_hat.shape[0]
+        samples = state.shape[1]
+        corr = tf.eye(self.dim, batch_shape=[batch, samples])
+        return corr 
+    
+    def brownian_motion(self, state: tf.Tensor, u_hat: tf.Tensor):
+        dt = self.config.dt
+        batch_size = tf.shape(u_hat)[0]
+        samples = tf.shape(state)[1]
+        actual_dim = tf.shape(state)[2] #in SV model actual_dim = 2* dim =/= dim
+        state_asset = state[...,:self.dim]
+        corr = self.corr_matrix(state_asset, u_hat)
+        cholesky_matrix = tf.linalg.cholesky(corr)
+        white_noise = tf.random.normal([batch_size, samples, actual_dim], mean=0.0, stddev=tf.sqrt(dt))
+        state_noise =  tf.einsum('...ij,...j->...i', cholesky_matrix, white_noise[...,:self.dim])
+        vol_noise = white_noise[...,self.dim:]
+        return tf.concat([state_noise, vol_noise], axis=-1)
+        
     
     def euler_maryama_step(self, time: tf.Tensor, state: tf.Tensor, u_hat: tf.Tensor) -> (tf.Tensor, tf.Tensor):
         """
@@ -123,11 +134,11 @@ class ItoProcessDriver(ABC):
         # TODO: high dim BM with cov matrix needed to be elaborated
 
         dt = self.config.dt
-        batch_size = tf.shape(u_hat)[0]
-        samples = tf.shape(state)[1]
-        actual_dim = tf.shape(state)[2]
-        # noise = tf.squeeze(tf.random.normal([Batch_size, samples, self.noise_dimension], mean=0.0, stddev=tf.sqrt(stepsize)))
-        noise = tf.random.normal([batch_size, samples, actual_dim], mean=0.0, stddev=tf.sqrt(dt))
+        # batch_size = tf.shape(u_hat)[0]
+        # samples = tf.shape(state)[1]
+        # actual_dim = tf.shape(state)[2]
+        # noise = tf.random.normal([batch_size, samples, actual_dim], mean=0.0, stddev=tf.sqrt(dt))
+        noise = self.brownian_motion(state, u_hat)
 
         drift = self.drift(time, state, u_hat)
         diffusion = self.diffusion(time, state, u_hat)
@@ -137,7 +148,7 @@ class ItoProcessDriver(ABC):
         # jump_diffusion = self.jump_diffusion(state, time)
         return state + increment, noise
     
-    def sde_simulation(self, u_hat: tf.Tensor, samples: int) -> (tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor):
+    def sde_simulation(self, u_hat: tf.Tensor, samples: int) -> (tf.Tensor, tf.Tensor):
         """
         the whole simulation process
         """
@@ -163,7 +174,7 @@ class ItoProcessDriver(ABC):
         return x, dw
     
     def sample_parameters(self, N=100):  # N is the number of batch size
-        num_params = N * self.config.batch_size
+        num_params = int(N * self.config.batch_size)
         return tf.concat([
             tf.random.uniform([num_params, 1], minval=p[0], maxval=p[1]) for p in self.range_list
         ], axis=1)
@@ -173,7 +184,7 @@ class ItoProcessDriver(ABC):
         input: the parmeter tensor with shape [batch_size, K], K is the dim of parameters
         output: the expanded parameter [batch_size, sample_size, time_steps, K]
         """
-        u_hat = tf.reshape(u_hat, [self.config.batch_size, 1, 1, len(self.range_list)])
+        u_hat = tf.reshape(u_hat, [u_hat.shape[0], 1, 1, u_hat.shape[-1]])
         u_hat = tf.tile(u_hat, [1, self.config.M, self.config.time_steps, 1])
         return u_hat
     
@@ -209,8 +220,12 @@ class GeometricBrowianMotion(ItoProcessDriver):
         self.initial_mode = config.initial_mode
         self.x_init = self.config.x_init
         self.r_range = [0.01, 0.1]
-        self.sigma_range = [0.02, 0.8]
+        self.sigma_range = [0.2, 0.6]
         self.range_list = [self.r_range, self.sigma_range]
+        if self.config.dim != 1:
+            self.rho_range = [1/(1-self.dim) + 1e-6, 0.8]
+            #if not self.config.iid:
+            self.range_list.append(self.rho_range)
 
     # region
     # @tf.function
@@ -293,9 +308,23 @@ class GeometricBrowianMotion(ItoProcessDriver):
         return (B, M, D)
         """
         batch = u_hat.shape[0]
+        samples = state.shape[1]
         sigma = tf.reshape(u_hat[:, 1], [batch, 1, 1])
-        return sigma * state
-    
+        sigma = tf.linalg.diag(tf.tile(sigma, [1, samples, self.dim]))
+        return tf.einsum('...ij,...j->...i', sigma, state)
+        
+    def corr_matrix(self, state: tf.Tensor, u_hat: tf.Tensor):
+        batch = state.shape[0]
+        samples = state.shape[1]
+        if not self.config.iid:
+            rho = tf.reshape(u_hat[:,2], [batch, 1, 1, 1])
+            rho_mat = tf.tile(rho, [1, samples, self.dim, self.dim])
+            i_mat = tf.eye(self.dim, batch_shape=[batch, samples])
+            rho_diag = tf.linalg.diag(rho_mat[...,0])
+            corr = i_mat - rho_diag + rho_mat
+        else:
+            corr = super(GeometricBrowianMotion, self).corr_matrix(state, u_hat)
+        return corr
     # region
     # def euler_maryama_step(self, time: tf.Tensor, state: tf.Tensor, u_hat: tf.Tensor) -> (tf.Tensor, tf.Tensor):
     #     """
@@ -372,24 +401,6 @@ class GeometricBrowianMotion(ItoProcessDriver):
     #     dw = tf.transpose(dw, perm=[1, 2, 0, 3])
     #     return x, dw
     # endregion
-    
-
-
-    def sample_parameters(self, N=100):  # N is the number of batch size
-        num_params = N * self.config.batch_size
-        return tf.concat([
-            tf.random.uniform([num_params, 1], minval=p[0], maxval=p[1]) for p in self.range_list
-        ], axis=1)
-
-    def expand_batch_inputs_dim(self, u_hat: tf.Tensor):
-        """
-        input: the parmeter tensor with shape [batch_size, K], K is the dim of parameters
-        output: the expanded parameter [batch_size, sample_size, time_steps, K]
-        """
-        u_hat = tf.reshape(u_hat, [self.config.batch_size, 1, 1, 2])
-        u_hat = tf.tile(u_hat, [1, self.config.M, self.config.time_steps, 1])
-        return u_hat
-
 
 
 class CEVModel(ItoProcessDriver):
@@ -408,8 +419,8 @@ class CEVModel(ItoProcessDriver):
         # self.beta1_range = [0.02, 0.05]
         # self.beta2_range = [0.03, 0.05]
         self.r_range = [0.01, 0.1]
-        self.sigma_range = [0.02, 0.08]
-        self.gamma_range = [0.2, 2.0]
+        self.sigma_range = [0.02, 0.05]
+        self.gamma_range = [0.3, 1.2]
         self.range_list = [self.r_range, self.sigma_range, self.gamma_range]
 
     # region
@@ -609,20 +620,7 @@ class CEVModel(ItoProcessDriver):
     #     return x, dw
     # endregion
 
-    def sample_parameters(self, N=100):  # N is the number of batch size
-        num_params = N * self.config.batch_size
-        return tf.concat([
-            tf.random.uniform([num_params, 1], minval=p[0], maxval=p[1]) for p in self.range_list
-        ], axis=1)
-
-    def expand_batch_inputs_dim(self, u_hat: tf.Tensor):
-        """
-        input: the parmeter tensor with shape [batch_size, K], K is the dim of parameters
-        output: the expanded parameter [batch_size, sample_size, time_steps, K]
-        """
-        u_hat = tf.reshape(u_hat, [self.config.batch_size, 1, 1, len(self.range_list)])
-        u_hat = tf.tile(u_hat, [1, self.config.M, self.config.time_steps, 1])
-        return u_hat
+    
 
 
 
@@ -633,15 +631,15 @@ class HestonModel(ItoProcessDriver):
         self.initial_mode = config.initial_mode
         self.x_init = self.config.x_init
 
-        self.r_range = [0.01, 0.1]
-        self.kappa_range = [0.02, 0.80]
-        self.theta_range = [1.01, 1.10]
-        self.sigma_range = [1.0, 1.10]
+        self.r_range = [0.02, 0.04]
+        self.kappa_range = [3., 5.]
+        self.theta_range = [0.09, 1.20]
+        self.sigma_range = [0.1, 0.2]
         self.range_list = [self.r_range, self.kappa_range, self.theta_range, self.sigma_range]
 
     def initial_sampler(self, u_hat: tf.Tensor) -> tf.Tensor:
         initial_state = super().initial_sampler(u_hat)
-        new_state = initial_state * 0.1
+        new_state = initial_state * 0.08
         initial_value = tf.concat([initial_state, new_state], axis=-1)
         return initial_value
 

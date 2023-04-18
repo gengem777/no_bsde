@@ -2,7 +2,7 @@ import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
 from abc import ABC, abstractmethod
-from function_space import DeepONet
+from function_space import DeepONet, DeepONetwithPI
 from typing import List, Tuple
 import time
 
@@ -22,8 +22,14 @@ class BaseBSDESolver(tf.keras.Model):
         self.dim = self.config.dim
         self.n_hidden = self.config.n_hidden
         self.n_layers = self.config.n_layers
-        self.no_net = DeepONet([self.n_hidden] *
+        if self.config.iid:
+            self.no_net = DeepONet([self.n_hidden] *
                                self.n_layers, [self.n_hidden] * self.n_layers)
+        else:
+            self.pi_layers = [10, 10]
+            self.no_net = DeepONetwithPI([self.n_hidden] *
+                               self.n_layers, [self.n_hidden] * self.n_layers, self.pi_layers, self.dim)
+
         self.time_horizon = self.config.T
         self.batch_size = self.config.batch_size
         self.samples = self.config.M

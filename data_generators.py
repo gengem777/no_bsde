@@ -1,6 +1,6 @@
 import numpy as np
 import tensorflow as tf
-from options import EuropeanOption, GeometricAsian, LookbackOption
+from options import EuropeanOption, GeometricAsian, LookbackOption, EuropeanBasketOption
 import math
 
 
@@ -44,19 +44,16 @@ class DiffusionModelGenerator(BaseGenerator):
         params_batch_model = self.params_model[idx * self.batch_size:(idx + 1) * self.batch_size]
         params_batch_option = self.params_option[idx * self.batch_size:(idx + 1) * self.batch_size]
         x, dw = self.sde.sde_simulation(params_batch_model, self.config.M)
-        if not type(self.option) == EuropeanOption:
+        if (type(self.option) != EuropeanOption) and (type(self.option) != EuropeanBasketOption):
             markov_var = self.option.markovian_var(x)
             x = tf.concat([x, markov_var], axis=-1) # x contains markov variable
         model_param = self.sde.expand_batch_inputs_dim(params_batch_model)
         option_param = self.option.expand_batch_inputs_dim(params_batch_option)
         u_hat = tf.concat([model_param, option_param], -1)
-        t_now = self.time_stamp[:, :, :-1, :]
-        x_now = x[:, :, :-1, :]
-        t_pls = self.time_stamp[:, :, 1:, :]
-        x_pls = x[:, :, 1:, :]
+        t = self.time_stamp
         # par_now = param[:, :, :-1, :]
         # y = self.option.exact_price(t_now, x_now, par_now)
-        data = t_pls, x_pls, t_now, x_now, x, dw, u_hat 
+        data = t, x, dw, u_hat 
         return (data, )
 
 

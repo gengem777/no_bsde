@@ -34,7 +34,7 @@ class DeepONet(tf.keras.Model):
 
     def grad(self, inputs: Tuple[tf.Tensor]) -> tf.Tensor:
         _, state_tensor, _ = inputs
-        with tf.GradientTape(watch_accessed_variables=True) as t:
+        with tf.GradientTape(watch_accessed_variables=False) as t:
             t.watch(state_tensor)
             out = self.call(inputs, training=False)
         grad = t.gradient(out, state_tensor)
@@ -45,7 +45,7 @@ class DeepONetwithPI(DeepONet):
     def __init__(self, branch_layer: List[int], trunk_layer: List[int], pi_layer: List[int], num_assets: int=5):
         self.num_assets = num_assets
         super(DeepONetwithPI, self).__init__(branch_layer, trunk_layer)
-        self.PI_layers = tf.keras.Sequential(layers=[PermutationInvariantLayer(m) for m in pi_layer], name='pi layers')
+        self.PI_layers = tf.keras.Sequential(layers=[PermutationInvariantLayer(m) for m in pi_layer]) #naming issue?
     
     def reshape_state(self, state: tf.Tensor):
         state_shape = tf.shape(state)
@@ -63,7 +63,7 @@ class DeepONetwithPI(DeepONet):
         # then the dimension of the state is (B, M, N, d, 2)
         # under SV for Asian option state is {(S_1, v_1, I_1), ..., (S_d, v_d, I_d)}, 
         # then the dimension of the state is (B, M, N, d, 3)
-        # first we need to make (B, M, N, d * 2) to (B, M, N, d, 2)
+        # first we need to make (B, M, N, d * 3) to (B, M, N, d, 3)
         state_tensor = self.reshape_state(state_tensor)
         state_before_pi = self.PI_layers(state_tensor)
         state_after_pi  = tf.reduce_mean(state_before_pi, axis=-2)
@@ -158,7 +158,8 @@ class PermutationInvariantLayer(tf.keras.layers.Layer):
                                         ])
     
   def call(self, inputs):
-    output = tf.einsum('...ij,jk->...ik', inputs, self.kernel) + self.bias 
+    output = tf.tensordot(inputs, self.kernel, [[-1], [0]]) + self.bias
+    output = tf.nn.relu(output)
     return output
 
 # region

@@ -1,8 +1,9 @@
 from sde import GeometricBrowianMotion, CEVModel, HestonModel
-from options import EuropeanOption, GeometricAsian, LookbackOption
+from options import EuropeanOption, GeometricAsian, LookbackOption, EuropeanBasketOption
 from markov_solver import BSDEMarkovianModel
 from config import Config
 import numpy as np
+import time
 
 # myconfig = Config()
 # gbm = GeometricBrowianMotion(myconfig)
@@ -15,8 +16,16 @@ import numpy as np
 # print('begin CEV!')
 # mymodel.train(1)
 
-def main(sde_name: str, option_name: str):
-    config = Config()
+def main(epoch: int, sde_name: str, option_name: str, multidim: bool=False, pi: bool=False):
+    if not multidim:
+        config = Config()
+    else:
+        if pi:
+            config = Config(dim=5, iid=False)
+            config.n_hidden = 20
+        else:
+            config = Config(dim=10, iid=True)
+            config.n_hidden = 50
 
     if sde_name == 'GBM':
         sde = GeometricBrowianMotion(config)
@@ -37,26 +46,40 @@ def main(sde_name: str, option_name: str):
 
     elif option_name == 'Lookback':
         option = LookbackOption(config)
+    
+    elif option_name == 'Basket_PI' or option_name == 'Basket_wo_PI' or "Basket":
+        option = EuropeanBasketOption(config)
 
     else:
         raise ValueError("wrong OPTION name")
     
     model = BSDEMarkovianModel(sde, option, config)
-    print(f'begin train {option_name} under {sde_name}')
-    history = model.train(20)  
-    loss = history.history['loss']
-    val_loss = history.history['val_loss']
-    print(f'train loss is: {loss} , val_loss is: {val_loss}')
-    np.savetxt(f'no_bsde/output/{option_name}_under_{sde_name}_train.txt', loss)
-
+    print(config.n_hidden)
+    print(f'begin train {option_name} under {sde_name} {config.dim} dimensions')
+    checkpoint_path = f'checkpoint/{sde_name}_{option_name}_{config.dim}'
+    time_start = time.time()
+    history = model.train(epoch, checkpoint_path)  
+    time_end = time.time()
+    loss = history.losses
+    print(f"time consume: {time_end - time_start}")
+    np.savetxt(f'train_curve/{option_name}_under_{sde_name}_{config.dim}train.txt', loss)
+    
+    
         
 if __name__ == "__main__":
-    # main("GBM", "European")
-    # main("CEV", "European")
-    # main("GBM", "Asian")
-    # main("GBM", "Lookback")
-    # main("SV", "European")
-    main("CEV", "Asian")
-    main("CEV", "Lookback")
+    # main(10, "GBM", "European")
+    main(100, "GBM", "Asian")
+    # main(10, "GBM", "Lookback")
+    
+    # main(10, "CEV", "European")
+    # main(10, "GBM", "European", True)
+    # main(10, "GBM", "Basket_PI", True, pi=True)
+    # main(10, "GBM", 'Basket_wo_PI', True, pi=False)
+    # main(10, "SV", "European")
+
+
+    # main("CEV", "Asian")
+    # main("CEV", "Lookback")
+    
     
     
