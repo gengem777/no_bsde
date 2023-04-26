@@ -1,5 +1,6 @@
 import tensorflow as tf
 from options import EuropeanOption, GeometricAsian, LookbackOption
+from sde import GeometricBrowianMotion
 from config import Config
 
 class TestEuropeanOption(tf.test.TestCase):
@@ -45,10 +46,11 @@ class TestGeoAsianOption(tf.test.TestCase):
     def testPayoff(self):
         config = Config()
         opt = GeometricAsian(config)
-        x = tf.random.uniform([3,5,6,2]) + 0.1
+        x = tf.random.uniform([3,5,6,1]) + 0.1
         u_hat = tf.random.uniform([3,5,6,4]) 
         payoff = opt.payoff(x, u_hat)
         self.assertEqual(payoff.shape, [3,5,1])
+        
 
     def testExactprice(self):
         pass
@@ -80,13 +82,32 @@ class TestlookbackOption(tf.test.TestCase):
     def testPayoff(self):
         config = Config()
         opt = LookbackOption(config)
-        x = tf.random.uniform([3,5,6,2]) + 0.1
+        x = tf.random.uniform([3,5,6,1]) + 0.1
         u_hat = tf.random.uniform([3,5,6,4]) 
         payoff = opt.payoff(x, u_hat)
         self.assertEqual(payoff.shape, [3,5,1])
+        x_min = tf.reduce_min(x, axis=2)
+        self.assertAllEqual(payoff, x[:,:,-1,:] - x_min)
 
     def testExactprice(self):
-        pass
+        config = Config()
+        opt = LookbackOption(config)
+        config = Config(dim=1, iid=True)
+        sde = GeometricBrowianMotion(config)
+        u_hat = sde.sample_parameters(1)
+        dim = config.dim
+        x,_ = sde.sde_simulation(u_hat, config.M)
+        x_m = opt.markovian_var(x)
+        arg_x = tf.concat([x, x_m], axis=-1)
+        time_stamp = tf.range(0, config.T, config.dt)
+        time_steps = int(config.T / config.dt)
+        time_stamp = tf.reshape(time_stamp, [1, 1, time_steps, 1])
+        t = tf.tile(time_stamp, [u_hat.shape[0], config.M, 1, 1])
+        u_hat = sde.expand_batch_inputs_dim(u_hat)
+        price = opt.exact_price(t, arg_x, u_hat)
+        exact_terminal_payoff = x[:,:,-1,:] - tf.reduce_min(x, 2)
+        self.assertAllLessEqual(tf.abs(price[:, :, -1, :] - exact_terminal_payoff), 0.05)
+        
 
 
 if __name__ == "__main__":

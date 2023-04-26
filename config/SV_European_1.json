@@ -1,0 +1,36 @@
+{
+    "eqn_config": {
+        "_comment": "European call option under SV",
+        "sde_name": "HestonModel",
+        "option_name": "EuropeanOption",
+        "T": 1.0,
+        "dt": 0.01,
+        "dim": 1,
+        "time_steps": 100,
+        "strike_range":[1.0, 0.2],
+        "r_range": [0.01, 0.08],
+        "theta_range": [0.09, 1.20],
+        "kappa_range": [0.2, 0.5],
+        "sigma_range": [0.1, 0.3],
+        "rho_range": [-0.8, 0.1],
+        "x_init": 1.0,
+        "vol_init": 0.1,
+        "batch_size": 200,
+        "sample_size": 50,
+        "sensors": 50,
+        "initial_mode": "partial_fixed"
+        
+
+    },
+    "net_config": {
+        "branch_layers": [10, 10, 10],
+        "trunk_layers": [10, 10, 10],
+        "pi_layers": [15, 15],
+        "filters": 1,
+        "strides": 10,
+        "lr": 5e-3,
+        "epochs": 20,
+        "alpha": 1.0
+        
+    }
+}

@@ -1,7 +1,17 @@
 import tensorflow as tf
 import numpy as np
-from sde import CEVModel, HestonModel
+from sde import CEVModel, HestonModel, GeometricBrowianMotion
 from config import Config
+class TestGeometricBrowianMotion(tf.test.TestCase):
+    def test_martingale_property(self):
+        config = Config(M=10000, dim=10, independent=False)
+        sde = GeometricBrowianMotion(config)
+        u_hat = tf.constant([[0.05, 0.1, 0.2],[0.05, 0.2, 1/(1-config.dim)+1e-4]])
+        dim = config.dim
+        s,_ = sde.sde_simulation(u_hat, config.M)
+        s_exp = tf.reduce_mean(s[:, :, -1, :dim], axis=1) * tf.exp(-0.05)
+        s_init = tf.reduce_mean(s[:, :, 0, :dim], axis=1)
+        self.assertAllLessEqual(tf.reduce_mean(tf.abs(s_init - s_exp)), 1e-2)
 
 class TestHestonModel(tf.test.TestCase):
     def test_initial_sampler(self):
@@ -127,11 +137,6 @@ class TestHestonModel(tf.test.TestCase):
         s_init = tf.reduce_mean(s[:, :, 0, :dim], axis=1)
         self.assertAllLessEqual(tf.reduce_mean(tf.abs(s_init - s_exp)), 1e-2)
 
-    
-        
-
-
-
 class TestCEVModel(tf.test.TestCase):
     def test_initial_sampler(self):
         config = Config()
@@ -245,9 +250,6 @@ class TestCEVModel(tf.test.TestCase):
         s_exp = tf.reduce_mean(s[:, :, -1, :dim], axis=1) * tf.exp(-0.03 * config.T)
         s_init = tf.reduce_mean(s[:, :, 0, :dim], axis=1)
         self.assertAllLessEqual(tf.reduce_mean(tf.abs(s_init - s_exp)), 1e-2)
-
-
-
     
 
 if __name__ == "__main__":

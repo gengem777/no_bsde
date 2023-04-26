@@ -12,7 +12,7 @@ class TestPermutationInvariantLayer(tf.test.TestCase):
                            [[2.,3.,4.,5.], [3.,5.,4.,6.], [5.,4.,3.,2.]]]]])
         y = pi_layer_2(pi_layer_1(x))
         y_pi = pi_layer_2(pi_layer_1(x_pi))
-        self.assertAllLessEqual(tf.abs(tf.reduce_sum(y, axis=-2) - tf.reduce_sum(y_pi, axis=-2)), 1e-6)
+        self.assertAllLessEqual(tf.reduce_sum(tf.abs(y - y_pi), axis=-2), 1e-6)
 
 class TestDeepONetwithPI(tf.test.TestCase):
     def testnumberofparams(self):

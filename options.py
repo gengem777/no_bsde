@@ -9,7 +9,8 @@ dist = tfd.Normal(loc=0., scale=1.)
 @dataclass
 class BaseOption:
     def __init__(self, config):
-        self.config = config
+        self.config = config.eqn_config
+        self.val_config = config.val_config
 
     def payoff(self, x: tf.Tensor, param: tf.Tensor, **kwargs):
         raise NotImplementedError
@@ -23,21 +24,20 @@ class BaseOption:
         output: the expanded parameter [batch_size, sample_size, time_steps, 1]
         """
         par = tf.reshape(par, [self.config.batch_size, 1, 1, 1])
-        par = tf.tile(par, [1, self.config.M, self.config.time_steps, 1])
+        par = tf.tile(par, [1, self.config.sample_size, self.config.time_steps, 1])
         return par
 
 
 
 class EuropeanOption(BaseOption):
-    def __init__(self, config, call_put_flag=True):
+    def __init__(self, config):
         super(EuropeanOption, self).__init__(config)
         """
         Parameters
         ----------
         m: moneyness with distribution N(1, 0.2)
         """
-        self.call_put_flag = call_put_flag
-        self.m_range = [1.0, 0.05]
+        self.strike_range = self.config.strike_range
         # self.m_range = [100, 5]
 
     def payoff(self, x: tf.Tensor, param: tf.Tensor, **kwargs):
@@ -56,10 +56,7 @@ class EuropeanOption(BaseOption):
         """
         k = tf.expand_dims(param[:, :, 0, -1], axis=-1) # (B, M, 1)
         temp = tf.reduce_mean(x[:, :, -1, :], axis=-1, keepdims=True) # (B, M, 1)
-        if self.call_put_flag:
-            return tf.nn.relu(temp - k)
-        else:
-            return tf.nn.relu(k - temp)
+        return tf.nn.relu(temp - k)
 
     def exact_price(self, t: tf.Tensor, x: tf.Tensor, params: tf.Tensor):
         """
@@ -71,17 +68,20 @@ class EuropeanOption(BaseOption):
         K = tf.expand_dims(params[:, :, :, 2], -1)
         d1 = (tf.math.log(x / K) + (r + vol ** 2 / 2) * (T - t)) / (vol * tf.math.sqrt(T - t) + 0.000001)
         d2 = d1 - vol * tf.math.sqrt(T - t)
-        if self.call_put_flag == True:
-            c = self.config.x_init * (x * dist.cdf(d1) - K * tf.exp(-r * (T - t)) * dist.cdf(d2))
-        else:
-            c = self.config.x_init * (K * tf.exp(-r * (T - t)) * dist.cdf(-d2) - x * dist.cdf(-d1))
+        c = self.config.x_init * (x * dist.cdf(d1) - K * tf.exp(-r * (T - t)) * dist.cdf(d2))
         return c
 
-    def sample_parameters(self, N=100):  # N is the time of batch size
-        m_range = self.m_range
-        num_params = int(N * self.config.batch_size)
-        m = tf.math.maximum(tf.random.normal([num_params, 1], m_range[0], m_range[1]), 0.9)
-        return m
+    def sample_parameters(self, N=100, training=True):  # N is the time of batch size
+        if training:
+            strike_range = self.strike_range
+            num_params = int(N * self.config.batch_size)
+            m = tf.math.maximum(tf.random.normal([num_params, 1], strike_range[0], strike_range[1]), strike_range[0] * 0.5)
+            return m
+        else:
+            strike_range = self.val_config.strike_range
+            num_params = int(N * self.val_config.batch_size)
+            m = tf.math.maximum(tf.random.normal([num_params, 1], strike_range[0], strike_range[1]), strike_range[0] * 0.8)
+            return m
 
 
 class EuropeanBasketOption(EuropeanOption):
@@ -104,11 +104,8 @@ class EuropeanBasketOption(EuropeanOption):
         """
         k = tf.expand_dims(param[:, :, 0, -1], axis=-1) # (B, M, 1)
         temp = tf.exp(tf.reduce_mean(tf.math.log(x[:, :, -1, :]), axis=-1, keepdims=True))# (B, M, 1)
-        if self.call_put_flag:
-            return tf.nn.relu(temp - k)
-        else:
-            return tf.nn.relu(k - temp)
-
+        return tf.nn.relu(temp - k)
+    
     def exact_price(self, t: tf.Tensor, x: tf.Tensor, u_hat: tf.Tensor):
         """
         Implement the BS formula
@@ -147,7 +144,7 @@ class LookbackOption(EuropeanOption):
         markov = tf.stack(m_list, axis=2)
         return markov
 
-    def payoff(self, x: tf.Tensor, u_hat: tf.Tensor, **kwargs):
+    def payoff(self, x: tf.Tensor, u_hat: tf.Tensor):
         temp = tf.reduce_mean(x[:, :, -1, :self.config.dim], axis=-1, keepdims=True) # (B, M, 1)
         float_min = tf.math.reduce_min(x[:, :, :, :self.config.dim], axis=2, keepdims=True) # (B, M, 1, d)
         temp_min = tf.reduce_mean(float_min, axis=-1) # (B,M,1)
@@ -174,6 +171,7 @@ class LookbackOption(EuropeanOption):
 class GeometricAsian(EuropeanOption):
     def __init__(self, config):
         """
+        multidimensional Geomatric Asian option
         Parameters
         ----------
         K: float or torch.tensor
@@ -183,7 +181,7 @@ class GeometricAsian(EuropeanOption):
     
     def markovian_var(self, x: tf.Tensor):
         """
-        x is a (B, M, N, d) size
+        x is a (B, M, N, d) size or (B, M, N, d+d) (SV model)
         The output is the running integral on the axis=2
         The geometric average is:
 
@@ -192,13 +190,14 @@ class GeometricAsian(EuropeanOption):
         $$
         """
         dt = self.config.dt
+        x = x[...,:self.config.dim]
         dt_tensor = tf.math.cumsum(tf.ones(tf.shape(x)) * dt, axis=2)
         sumlog = tf.math.cumsum(tf.math.log(x), axis=2)
         log_average = sumlog * dt / dt_tensor
         geo_average = tf.exp(log_average)
         return geo_average
    
-    def payoff(self, x_arg: tf.Tensor, param: tf.Tensor, **kwargs):
+    def payoff(self, x_arg: tf.Tensor, param: tf.Tensor):
         """
         Parameters
         ----------
@@ -235,6 +234,7 @@ class GeometricAsian(EuropeanOption):
         d_1 = d_2 + vol_bar
         A = tf.exp(-r * (T - t))*(G_t ** (t/T) * y_t ** (1 - t/T) * tf.exp(mu_bar + vol_bar**2/2) * dist.cdf(d_1) - K * dist.cdf(d_2))
         return A
+
 
 
         

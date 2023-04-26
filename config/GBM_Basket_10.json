@@ -1,0 +1,44 @@
+{
+    "eqn_config": {
+        "_comment": "European call basket option",
+        "sde_name": "GeometricBrownianMotion",
+        "option_name": "EuropeanBasketOption",
+        "T": 1.0,
+        "dt": 0.01,
+        "dim": 10,
+        "time_steps": 100,
+        "strike_range":[1.0, 0.15],
+        "r_range": [0.01, 0.08],
+        "s_range": [0.1, 1.0],
+        "rho_range": [-0.1, 0.95],
+        "x_init": 1.0,
+        "vol_init": 0.1,
+        "batch_size": 200,
+        "sample_size": 50,
+        "sensors": 50,
+        "initial_mode": "partial_fixed"
+    },
+    "net_config": {
+        "branch_layers": [10, 10, 10],
+        "trunk_layers": [10, 10, 10],
+        "pi_layers": [15, 15],
+        "kernel_type": "conv",
+        "filters": 4,
+        "strides": 15,
+        "lr": 5e-3,
+        "epochs": 20,
+        "alpha": 1.0
+        
+    },
+    "val_config": {
+        "strike_range":[1.0, 0.05],
+        "r_range": [0.03, 0.05],
+        "s_range": [0.2, 0.5],
+        "rho_range": [-0.1, 0.7],
+        "x_init": 1.0,
+        "vol_init": 0.1,
+        "batch_size": 50,
+        "sample_size": 100
+        
+    }
+}
