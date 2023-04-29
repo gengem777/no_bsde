@@ -1,0 +1,34 @@
+{
+    "eqn_config": {
+        "_comment": "Asian basket option under SV",
+        "sde_name": "HestonModel",
+        "option_name": "EuropeanBasketOption",
+        "T": 1.0,
+        "dt": 0.01,
+        "dim": 5,
+        "time_steps": 100,
+        "strike_range":[1.0, 0.2],
+        "r_range": [0.005, 0.05],
+        "s_range": [0.01, 0.1],
+        "rho_range": [-0.2, 0.9],
+        "x_init": 1.0,
+        "vol_init": 0.1,
+        "batch_size": 200,
+        "sample_size": 50,
+        "sensors": 50,
+        "initial_mode": "partial_fixed"
+        
+
+    },
+    "net_config": {
+        "branch_layers": [10, 10, 10],
+        "trunk_layers": [10, 10, 10],
+        "pi_layers": [20, 15],
+        "filters": 1,
+        "strides": 10,
+        "lr": 5e-3,
+        "epochs": 10,
+        "alpha": 1.0
+        
+    }
+}

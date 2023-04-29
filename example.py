@@ -1,4 +1,4 @@
-from sde import GeometricBrowianMotion, CEVModel, HestonModel
+from sde import GeometricBrownianMotion, CEVModel, HestonModel
 from options import EuropeanOption, GeometricAsian, LookbackOption, EuropeanBasketOption
 from markov_solver import BSDEMarkovianModel
 from config import Config
@@ -21,7 +21,7 @@ def main(epoch: int, sde_name: str, option_name: str, multidim: bool=False, pi: 
         config = Config()
     else:
         if pi:
-            config = Config(dim=5, iid=False)
+            config = Config(dim=10, iid=False)
             config.n_hidden = 20
         else:
             config = Config(dim=10, iid=True)
@@ -68,12 +68,12 @@ def main(epoch: int, sde_name: str, option_name: str, multidim: bool=False, pi: 
         
 if __name__ == "__main__":
     # main(10, "GBM", "European")
-    main(100, "GBM", "Asian")
+    # main(100, "GBM", "Asian")
     # main(10, "GBM", "Lookback")
     
     # main(10, "CEV", "European")
     # main(10, "GBM", "European", True)
-    # main(10, "GBM", "Basket_PI", True, pi=True)
+    main(15, "GBM", "Basket_PI", True, pi=True)
     # main(10, "GBM", 'Basket_wo_PI', True, pi=False)
     # main(10, "SV", "European")
 

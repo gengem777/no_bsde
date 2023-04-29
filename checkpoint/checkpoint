@@ -1,2 +1,2 @@
-model_checkpoint_path: "GBM_Asian_1"
-all_model_checkpoint_paths: "GBM_Asian_1"
+model_checkpoint_path: "GBM_Basket_10_partial_fixed_conv"
+all_model_checkpoint_paths: "GBM_Basket_10_partial_fixed_conv"

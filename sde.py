@@ -18,10 +18,22 @@ class ItoProcessDriver(ABC):
     def __init__(self, config):  # TODO
         """
         config is the set of the hyper-parameters
+        we give the notations:
+        dim: dimension of assets
+        T; time horizon of simulation
+        dt: length of time increments
+        N: number of time steps
+        x_init: initial state value
+        vol_init: inital stochastic volatility value
         """
-        self.config = config
+        self.config = config.eqn_config
+        self.val_config = config.val_config
         self.dim = self.config.dim
+        self.initial_mode = self.config.initial_mode
+        self.x_init = self.config.x_init
+        self.vol_init = self.config.vol_init
         self.range_list = []
+        self.val_range_list = []
     
     def get_batch_size(self, u_hat: tf.Tensor):
         return tf.shape(u_hat)[0]
@@ -32,17 +44,17 @@ class ItoProcessDriver(ABC):
         """
         batch_size = self.get_batch_size(u_hat)
         dimension = self.config.dim
-        samples = self.config.M
+        samples = self.config.sample_size
         # if dimension == 1:
-        dist = tfp.distributions.TruncatedNormal(loc=self.initial_value,
-                                                        scale=self.initial_value * 0.1,
-                                                        low=self.initial_value * 0.8,
-                                                        high=self.initial_value * 1.3)
+        dist = tfp.distributions.TruncatedNormal(loc=self.x_init,
+                                                        scale=self.x_init * 0.1,
+                                                        low=self.x_init* 0.8,
+                                                        high=self.x_init * 1.3)
         if self.initial_mode == 'random':
             state = tf.reshape(dist.sample(batch_size * samples * dimension), [batch_size, samples, dimension])
 
         elif self.initial_mode == 'fixed':
-            state = self.initial_value * tf.ones(shape=(batch_size, samples, dimension))
+            state = self.x_init * tf.ones(shape=(batch_size, samples, dimension))
 
         elif self.initial_mode == 'partial_fixed':
             state = tf.reshape(dist.sample(batch_size), [batch_size, 1, 1])
@@ -59,18 +71,13 @@ class ItoProcessDriver(ABC):
         """
         Computes the drift of this stochastic process.
         operator setting
-        mu: (B, 1)
-        state: (B, M, D)
+        mu: (batch_size, 1)
+        state: (batch_size, path_size, dim)
         mu * state on a batch
-        return: (B, M, D)
+        return: batch_size, path_size, dim)
         """
-        batch = u_hat.shape[0]
-        assert batch == state.shape[0]
-        if len(state.shape) == 3:
-            mu = tf.reshape(u_hat[:, 0], [batch, 1, 1])
-        elif len(state.shape) == 4:
-            mu = tf.reshape(u_hat[:, 0], [batch, 1, 1, 1])
-        assert len(state.shape) == len(state.shape)
+        batch = tf.shape(u_hat)[0]
+        mu = tf.reshape(u_hat[:, 0], [batch, 1, 1])
         return mu * state
 
     @abstractmethod
@@ -79,7 +86,7 @@ class ItoProcessDriver(ABC):
 
     @abstractmethod
     def diffusion_onestep(self, time_tensor: tf.Tensor, state_tensor: tf.Tensor, u_hat: tf.Tensor):
-        """
+        r"""
         get \sigma(t,X) with shape (B,M,N,d)
         """
         raise NotImplementedError
@@ -96,12 +103,21 @@ class ItoProcessDriver(ABC):
         """
         In base class the corr is just identity matrix
         """
-        batch = u_hat.shape[0]
-        samples = state.shape[1]
+        batch = tf.shape(u_hat)[0]
+        samples = tf.shape(state)[1]
         corr = tf.eye(self.dim, batch_shape=[batch, samples])
         return corr 
     
     def brownian_motion(self, state: tf.Tensor, u_hat: tf.Tensor):
+        """
+        generate non iid Brownian Motion increments for a certain time step
+        the time increment is dt, the way to calculate the dependent BM increment:
+        1. calculate corr matrix with the function corr_matrix (at least in this class)
+        2. do cholasky decomposition on corr matrix to a low diagnal matrix L
+        3. multiply the matrix L with the iid BMs
+        denote dim as the dimension of asset, the return shape is (batch, paths, dim), and
+        (batch, paths, dim * 2) under stochastic vol cases.
+        """
         dt = self.config.dt
         batch_size = tf.shape(u_hat)[0]
         samples = tf.shape(state)[1]
@@ -115,7 +131,7 @@ class ItoProcessDriver(ABC):
         return tf.concat([state_noise, vol_noise], axis=-1)
         
     
-    def euler_maryama_step(self, time: tf.Tensor, state: tf.Tensor, u_hat: tf.Tensor) -> (tf.Tensor, tf.Tensor):
+    def euler_maryama_step(self, time: tf.Tensor, state: tf.Tensor, u_hat: tf.Tensor):
         """
 
         :param state: tf.Tensor
@@ -134,23 +150,19 @@ class ItoProcessDriver(ABC):
         # TODO: high dim BM with cov matrix needed to be elaborated
 
         dt = self.config.dt
-        # batch_size = tf.shape(u_hat)[0]
-        # samples = tf.shape(state)[1]
-        # actual_dim = tf.shape(state)[2]
-        # noise = tf.random.normal([batch_size, samples, actual_dim], mean=0.0, stddev=tf.sqrt(dt))
         noise = self.brownian_motion(state, u_hat)
-
         drift = self.drift(time, state, u_hat)
         diffusion = self.diffusion(time, state, u_hat)
-        # increment = drift*stepsize + tf.einsum("smn,sn->sm", diffusion, noise)
-        assert diffusion.shape == noise.shape
         increment = drift * dt + diffusion * noise
         # jump_diffusion = self.jump_diffusion(state, time)
         return state + increment, noise
     
-    def sde_simulation(self, u_hat: tf.Tensor, samples: int) -> (tf.Tensor, tf.Tensor):
+    def sde_simulation(self, u_hat: tf.Tensor, samples: int):
         """
-        the whole simulation process
+        the whole simulation process with each step iterated by method euler_maryama_step(),
+        return is a tuple of tensors recording the paths of state and BM increments
+        x: path of states, shape: (batch_size, path_size, num_timesteps, dim)
+        dw: path of BM increments, shape: (batch_size, path_size, num_timesteps-1, dim)
         """
         stepsize = self.config.dt
         time_steps = self.config.time_steps
@@ -173,37 +185,49 @@ class ItoProcessDriver(ABC):
         dw = tf.transpose(dw, perm=[1, 2, 0, 3])
         return x, dw
     
-    def sample_parameters(self, N=100):  # N is the number of batch size
+    def sample_parameters(self, N=100, training=True):  # N is the number of batch size
+        """
+        sample paremeters for simulating SDE given the range of each parameter from the config file,
+        given the number of parameters need to be samples as k:
+        the return tensorshape is [batch_size, k]
+        """
         num_params = int(N * self.config.batch_size)
-        return tf.concat([
-            tf.random.uniform([num_params, 1], minval=p[0], maxval=p[1]) for p in self.range_list
-        ], axis=1)
+        if training:
+            num_params = int(N * self.config.batch_size)
+            return tf.concat([
+                tf.random.uniform([num_params, 1], minval=p[0], maxval=p[1]) for p in self.range_list
+            ], axis=1)
+        else:
+            num_params = int(N * self.val_config.batch_size)
+            return tf.concat([
+                tf.random.uniform([num_params, 1], minval=p[0], maxval=p[1]) for p in self.val_range_list
+            ], axis=1)
 
     def expand_batch_inputs_dim(self, u_hat: tf.Tensor):
         """
+        In order for consistence between input shape of parameter tensor and input state tensor into the network
+        we need to unify the dimension. This method is to expand the dimension of 2-d tensor to 4-d using tf.tile method
+
         input: the parmeter tensor with shape [batch_size, K], K is the dim of parameters
         output: the expanded parameter [batch_size, sample_size, time_steps, K]
         """
         u_hat = tf.reshape(u_hat, [u_hat.shape[0], 1, 1, u_hat.shape[-1]])
-        u_hat = tf.tile(u_hat, [1, self.config.M, self.config.time_steps, 1])
+        u_hat = tf.tile(u_hat, [1, self.config.sample_size, self.config.time_steps, 1])
         return u_hat
     
-    @property
-    def initial_value(self):
+    def split_uhat(self, u_hat: tf.Tensor):
         """
-        A simple getter for the initial value.
+        This method is to calculate the rate and volatility curve given a batch of parameters
+        For example, GBM case, the parameters sampled has dimension batch_size + (3). where K=3
+        and batch_size = (B, M, N)
+        Then this function calculate the curve function based on parameter $\mu$ and $\sigma$
+        return $\mu(t)$ and $\sigma(t)$ on the given support grid and return the batch of moneyness K
+        Then Then return is a tuple of two tensors: (u_curve, u_param)
+        u_curve: batch_size + (time_steps, num_curves), u_param = batch_size + (1)
         """
-        return self.config.x_init
-    
-    @property
-    def initial_vol(self):
-        """
-        A simple getter for the initial value.
-        """
-        return self.config.vol_init
+        return u_hat, _
 
-
-class GeometricBrowianMotion(ItoProcessDriver):
+class GeometricBrownianMotion(ItoProcessDriver):
     """
     A subclass of ItoProcess, MertonJumpDiffusionProcess under Q measure, mainly for testing.
     This class implements a multivariate geometric Brownian motion process
@@ -217,76 +241,18 @@ class GeometricBrowianMotion(ItoProcessDriver):
     def __init__(self,
                  config):
         super().__init__(config)
-        self.initial_mode = config.initial_mode
+        self.config = config.eqn_config
+        self.initial_mode = self.config.initial_mode
         self.x_init = self.config.x_init
-        self.r_range = [0.01, 0.1]
-        self.sigma_range = [0.2, 0.6]
-        self.range_list = [self.r_range, self.sigma_range]
+        self.r_range = self.config.r_range
+        self.s_range = self.config.s_range
+        self.range_list = [self.r_range, self.s_range]
+        self.val_range_list = [self.val_config.r_range, self.val_config.s_range]
         if self.config.dim != 1:
-            self.rho_range = [1/(1-self.dim) + 1e-6, 0.8]
+            self.rho_range = self.config.rho_range
             #if not self.config.iid:
             self.range_list.append(self.rho_range)
-
-    # region
-    # @tf.function
-    # def initial_sampler(self, param: tf.Tensor) -> tf.Tensor:
-    #     batch_size = self.get_batch_size(param)
-    #     dimension = self.config.dim
-    #     samples = self.config.M
-    #     if dimension == 1:
-    #         if self.initial_mode == 'random':
-    #             dist = tfp.distributions.TruncatedNormal(loc=self.initial_value * 1.5,
-    #                                                      scale=self.initial_value * 0.2,
-    #                                                      low=0.5,
-    #                                                      high=3.0)
-    #             state = tf.reshape(dist.sample(batch_size * samples * dimension), [batch_size, samples, dimension])
-
-    #         elif self.initial_mode == 'fixed':
-    #             state = self.initial_value * tf.ones(shape=(batch_size, samples, dimension))
-
-    #         elif self.initial_mode == 'partial_fixed':
-    #             dist = tfp.distributions.TruncatedNormal(loc=self.initial_value * 1.5,
-    #                                                      scale=self.initial_value * 0.2,
-    #                                                      low=0.5,
-    #                                                      high=3.0)
-    #             state = tf.reshape(dist.sample(batch_size * dimension), [batch_size, 1, dimension])
-    #             state = tf.tile(state, [1, samples, 1])
-
-    #     else:
-    #         dist = tfp.distributions.Dirichlet([1.0] * dimension)
-    #         state = dist.sample([batch_size, samples]) * tf.cast(dimension, dtype=tf.float32)
-
-    #     return state
-
-    # def drift(self, time: tf.Tensor, state: tf.Tensor, param: tf.Tensor) -> tf.Tensor:
-    #     """
-    #     Computes the drift of this stochastic process.
-
-    #     :param state : tf.Tensor
-    #         Contains samples from the stochastic process at a specific time.
-    #         Shape is [self.samples, self.dimension].
-    #     :param time : tf.Tensor
-    #         The time in question; a scalar,
-    #     under Q measure drift = r - q
-    #     :return drift: tf.Tensor
-    #         Tensor is a list of instantaneous drifts for each sampled state input,
-    #         a tensor of shape [self.samples, self.dimension].
-
-    #     operator setting
-    #     mu: (B, 1)
-    #     state: (B, M, D)
-    #     mu * state on a batch
-    #     return: (B, M, D)
-    #     """
-    #     batch = param.shape[0]
-    #     assert batch == state.shape[0]
-    #     if len(state.shape) == 3:
-    #         mu = tf.reshape(param[:, 0], [batch, 1, 1])
-    #     elif len(state.shape) == 4:
-    #         mu = tf.reshape(param[:, 0], [batch, 1, 1, 1])
-    #     assert len(state.shape) == len(state.shape)
-    #     return mu * state
-    # endregion
+            self.val_range_list.append(self.val_config.rho_range)
 
     def diffusion(self, time: tf.Tensor, state: tf.Tensor, u_hat: tf.Tensor) -> tf.Tensor:
         """
@@ -316,50 +282,16 @@ class GeometricBrowianMotion(ItoProcessDriver):
     def corr_matrix(self, state: tf.Tensor, u_hat: tf.Tensor):
         batch = state.shape[0]
         samples = state.shape[1]
-        if not self.config.iid:
+        if not self.dim == 1:
             rho = tf.reshape(u_hat[:,2], [batch, 1, 1, 1])
             rho_mat = tf.tile(rho, [1, samples, self.dim, self.dim])
             i_mat = tf.eye(self.dim, batch_shape=[batch, samples])
             rho_diag = tf.linalg.diag(rho_mat[...,0])
             corr = i_mat - rho_diag + rho_mat
         else:
-            corr = super(GeometricBrowianMotion, self).corr_matrix(state, u_hat)
+            corr = super(GeometricBrownianMotion, self).corr_matrix(state, u_hat)
         return corr
-    # region
-    # def euler_maryama_step(self, time: tf.Tensor, state: tf.Tensor, u_hat: tf.Tensor) -> (tf.Tensor, tf.Tensor):
-    #     """
-
-    #     :param state: tf.Tensor
-    #         The current state of the process.
-    #         Shape is [batch, samples, dim].
-    #     :param time: tf.Tensor
-    #         The current time of the process. A scalar.
-    #     :param noise: tf.Tensor
-    #         The noise of the driving process.
-    #         Shape is [batch, samples, dim].
-    #     :param timestep : tf.Tensor
-    #         A scalar; dt, the amount of time into the future in which we are stepping.
-    #     :return (state, time) : (tf.Tensor, tf.Tensor)
-    #         If this Ito process is X(t), the return value is (X(t+dt), dBt, St_*YdNt).
-    #     """
-    #     # TODO: high dim BM with cov matrix needed to be elaborated
-
-    #     dt = self.config.dt
-    #     batch_size = tf.shape(u_hat)[0]
-    #     samples = tf.shape(state)[1]
-    #     dim = tf.shape(state)[2]
-    #     # noise = tf.squeeze(tf.random.normal([Batch_size, samples, self.noise_dimension], mean=0.0, stddev=tf.sqrt(stepsize)))
-    #     noise = tf.random.normal([batch_size, samples, dim], mean=0.0, stddev=tf.sqrt(dt))
-
-    #     drift = self.drift(time, state, u_hat)
-    #     diffusion = self.diffusion(time, state, u_hat)
-    #     # increment = drift*stepsize + tf.einsum("smn,sn->sm", diffusion, noise)
-    #     assert diffusion.shape == noise.shape
-    #     increment = drift * dt + diffusion * noise
-    #     # jump_diffusion = self.jump_diffusion(state, time)
-    #     return state + increment, noise
-    # endregion
-
+    
     def diffusion_onestep(self, time_tensor: tf.Tensor, state_tensor: tf.Tensor, u_hat: tf.Tensor):
         """
         get \sigma(t,X) with shape (B,M,N,d)
@@ -374,34 +306,28 @@ class GeometricBrowianMotion(ItoProcessDriver):
         v = tf.expand_dims(u_hat[..., 1], -1)
         state_tensor_after_step = state_tensor + r * state_tensor * self.config.dt + v * state_tensor * dw
         return state_tensor_after_step
+    
+    def split_uhat(self, u_hat: tf.Tensor):
+        """
+        GBM case, the parameters sampled has dimension batch_size + (3). where K=3
+        and batch_size = (B, M, N)
+        Then this function calculate the curve function based on parameter $\mu$ and $\sigma$
+        return $\mu(t)$ and $\sigma(t)$ on the given support grid and return the batch of moneyness K
+        Then Then return is a tuple of two tensors: (u_curve, u_param)
+        u_curve: batch_size + (time_steps, num_curves), u_param = batch_size + (1)
+        """
+        # batch_shape = (u_hat.shape[0], u_hat.shape[1], u_hat.shape[2])
+        B_0 = tf.shape(u_hat)[0]
+        B_1 = tf.shape(u_hat)[1]
+        B_2 = tf.shape(u_hat)[2]
+        u_curve = tf.reshape(u_hat[...,:2], [B_0, B_1, B_2, 1, 2])
+        u_curve = tf.tile(u_curve, [1, 1, 1, self.config.sensors, 1])
+        u_param = u_hat[..., 2:]
+        return u_curve, u_param
 
-    # region
-    # def sde_simulation(self, u_hat: tf.Tensor, samples: int) -> (tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor):
-    #     """
-    #     the whole simulation process
-    #     """
-    #     stepsize = self.config.dt
-    #     time_steps = self.config.time_steps
-    #     state_process = tf.TensorArray(tf.float32, size=time_steps)
-    #     brownian_increments = tf.TensorArray(tf.float32, size=time_steps - 1)
-    #     state = self.initial_sampler(u_hat)
 
-    #     time = tf.constant(0.0)
-    #     state_process = state_process.write(0, state)
-    #     current_index = 1
-    #     while current_index < time_steps:
-    #         state, dw = self.euler_maryama_step(time, state, u_hat)
-    #         state_process = state_process.write(current_index, state)
-    #         brownian_increments = brownian_increments.write(current_index - 1, dw)
-    #         current_index += 1
-    #         time += stepsize
-    #     x = state_process.stack()
-    #     dw = brownian_increments.stack()
-    #     x = tf.transpose(x, perm=[1, 2, 0, 3])
-    #     dw = tf.transpose(dw, perm=[1, 2, 0, 3])
-    #     return x, dw
-    # endregion
-
+class TimeDependentGBM(GeometricBrownianMotion):
+    pass
 
 class CEVModel(ItoProcessDriver):
     """
@@ -412,9 +338,6 @@ class CEVModel(ItoProcessDriver):
     def __init__(self,
                  config):
         super().__init__(config)
-        self.initial_mode = config.initial_mode
-        self.x_init = self.config.x_init
-
         # self.beta0_range = [0.02, 0.06]
         # self.beta1_range = [0.02, 0.05]
         # self.beta2_range = [0.03, 0.05]
@@ -422,77 +345,6 @@ class CEVModel(ItoProcessDriver):
         self.sigma_range = [0.02, 0.05]
         self.gamma_range = [0.3, 1.2]
         self.range_list = [self.r_range, self.sigma_range, self.gamma_range]
-
-    # region
-    # def initial_sampler(self, param: tf.Tensor) -> tf.Tensor:
-    #     batch_size = self.get_batch_size(param)
-    #     dimension = self.config.dim
-    #     samples = self.config.M
-    #     if dimension == 1:
-    #         if self.initial_mode == 'random':
-    #             dist = tfp.distributions.TruncatedNormal(loc=self.initial_value * 1.5,
-    #                                                      scale=self.initial_value * 0.2,
-    #                                                      low=0.5,
-    #                                                      high=3.0)
-    #             state = tf.reshape(dist.sample(batch_size * samples * dimension), [batch_size, samples, dimension])
-
-    #         elif self.initial_mode == 'fixed':
-    #             state = self.initial_value * tf.ones(shape=(batch_size, samples, dimension))
-
-    #         elif self.initial_mode == 'partial_fixed':
-    #             dist = tfp.distributions.TruncatedNormal(loc=self.initial_value * 1.5,
-    #                                                      scale=self.initial_value * 0.2,
-    #                                                      low=0.5,
-    #                                                      high=3.0)
-    #             state = tf.reshape(dist.sample(batch_size * dimension), [batch_size, 1, dimension])
-    #             state = tf.tile(state, [1, samples, 1])
-
-    #     else:
-    #         dist = tfp.distributions.Dirichlet([1.0] * dimension)
-    #         state = dist.sample([batch_size, samples]) * tf.cast(dimension, dtype=tf.float32)
-
-    #     return state
-
-    # def rate_curve(self, time: tf.Tensor, state: tf.Tensor, param: tf.Tensor) -> tf.Tensor:
-    #     """
-    #     time is with same shape as state [batch, sample, dim]
-    #     param is [batch, 5], bata_i=param[:, i], i = 0,1,2
-    #     calculate r(t) = \beta_0 + (\beta_1 + \beta_2 t)e^{-t}
-    #     return same shape as state_t [batch, sample, dim]
-    #     """
-    #     tau = (self.config.T - time) * tf.ones_like(state)
-    #     batch = tf.shape(param)[0]
-    #     b0 = tf.reshape(param[:, 0], [batch, 1, 1])
-    #     b1 = tf.reshape(param[:, 1], [batch, 1, 1])
-    #     b2 = tf.reshape(param[:, 2], [batch, 1, 1])
-    #     rate = b0 * tf.ones(tf.shape(tau)) + b1 * tf.math.exp(-tau) + b2 * tau * tf.math.exp(-tau)
-    #     return rate
-
-    # def drift(self, time: tf.Tensor, state: tf.Tensor, param: tf.Tensor) -> tf.Tensor:
-    #     """
-    #     Computes the drift of this stochastic process.
-
-    #     :param state : tf.Tensor
-    #         Contains samples from the stochastic process at a specific time.
-    #         Shape is [self.samples, self.dimension].
-    #     :param time : tf.Tensor
-    #         The time in question; a scalar,
-    #     under Q measure drift = r(t)
-    #     :return drift: tf.Tensor
-    #         Tensor is a list of instantaneous drifts for each sampled state input,
-    #         a tensor of shape [self.batch, self.samples, self.dim].
-
-    #     operator setting
-    #     mu: (B, 1)
-    #     state: (B, M, D)
-    #     mu * state on a batch
-    #     return: (B, M, D)
-    #     """
-    #     batch = param.shape[0]
-    #     assert batch == state.shape[0]
-    #     mu = self.rate_curve(time, state, param)
-    #     return mu * state
-    # endregion
 
     def vol_surf(self, time: tf.Tensor, state: tf.Tensor, u_hat: tf.Tensor) -> tf.Tensor:
         """
@@ -531,40 +383,6 @@ class CEVModel(ItoProcessDriver):
         vol = self.vol_surf(time, state, u_hat)
         return vol * state
 
-    # region
-    # def euler_maryama_step(self, time: tf.Tensor, state: tf.Tensor, u_hat: tf.Tensor) -> (tf.Tensor, tf.Tensor):
-    #     """
-    #     :param state: tf.Tensor
-    #         The current state of the process.
-    #         Shape is [batch, samples, dim].
-    #     :param time: tf.Tensor
-    #         The current time of the process. A scalar.
-    #     :param noise: tf.Tensor
-    #         The noise of the driving process.
-    #         Shape is [batch, samples, dim].
-    #     :param timestep : tf.Tensor
-    #         A scalar; dt, the amount of time into the future in which we are stepping.
-    #     :return (state, time) : (tf.Tensor, tf.Tensor)
-    #         If this Ito process is X(t), the return value is (X(t+dt), dBt, St_*YdNt).
-    #     """
-    #     # TODO: high dim BM with cov matrix needed to be elaborated
-
-    #     dt = self.config.dt
-    #     batch_size = tf.shape(u_hat)[0]
-    #     samples = tf.shape(state)[1]
-    #     dim = tf.shape(state)[2]
-    #     # noise = tf.squeeze(tf.random.normal([Batch_size, samples, self.noise_dimension], mean=0.0, stddev=tf.sqrt(stepsize)))
-    #     noise = tf.random.normal([batch_size, samples, dim], mean=0.0, stddev=tf.sqrt(dt))
-
-    #     drift = self.drift(time, state, u_hat)
-    #     diffusion = self.diffusion(time, state, u_hat)
-    #     # increment = drift*stepsize + tf.einsum("smn,sn->sm", diffusion, noise)
-    #     assert diffusion.shape == noise.shape
-    #     increment = drift * dt + diffusion * noise
-    #     # jump_diffusion = self.jump_diffusion(state, time)
-    #     return state + increment, noise
-    # endregion
-
     def drift_onestep(self, time_tensor: tf.Tensor, state_tensor: tf.Tensor, u_hat: tf.Tensor):
         """
         all inputs are [batch, sample, T, dim] like
@@ -589,53 +407,22 @@ class CEVModel(ItoProcessDriver):
         v = self.diffusion_onestep(time_tensor, state_tensor, u_hat)
         state_tensor_after_step = state_tensor + r * state_tensor * self.config.dt + v * state_tensor * dw
         return state_tensor_after_step
-
-    # region
-    # def sde_simulation(self, param: tf.Tensor, samples: int) -> (tf.Tensor, tf.Tensor, tf.Tensor):
-
-    #     stepsize = self.config.dt
-    #     time_steps = self.config.time_steps
-    #     dimension = self.config.dim
-    #     state_process = tf.TensorArray(tf.float32, size=time_steps)
-    #     brownian_increments = tf.TensorArray(tf.float32, size=time_steps - 1)
-    #     # jump_increments = tf.TensorArray(tf.float32, size=time_steps-1)
-    #     # batch_size = tf.shape(param)[0]
-    #     state = self.initial_sampler(param)
-    #     time = tf.constant(0.0)
-    #     state_process = state_process.write(0, state)
-    #     current_index = 1
-    #     while current_index < time_steps:
-    #         state, dw = self.euler_maryama_step(time, state, param)
-    #         state_process = state_process.write(current_index, state)
-    #         brownian_increments = brownian_increments.write(current_index - 1, dw)
-    #         # jump_increments = jump_increments.write(current_index-1, dj)
-    #         current_index += 1
-    #         time += stepsize
-    #     x = state_process.stack()
-    #     dw = brownian_increments.stack()
-    #     x = tf.transpose(x, perm=[1, 2, 0, 3])
-    #     dw = tf.transpose(dw, perm=[1, 2, 0, 3])
-    #     # dw1 = tf.random.normal([batch_size, samples, time_steps - 1, dimension], mean=0.0, stddev=tf.sqrt(stepsize))
-    #     # dw2 = tf.random.normal([batch_size, samples, time_steps - 1, dimension], mean=0.0, stddev=tf.sqrt(stepsize))
-    #     return x, dw
-    # endregion
-
     
-
 
 
 class HestonModel(ItoProcessDriver):
     def __init__(self,
                  config):
         super().__init__(config)
-        self.initial_mode = config.initial_mode
-        self.x_init = self.config.x_init
-
-        self.r_range = [0.02, 0.04]
-        self.kappa_range = [3., 5.]
-        self.theta_range = [0.09, 1.20]
-        self.sigma_range = [0.1, 0.2]
-        self.range_list = [self.r_range, self.kappa_range, self.theta_range, self.sigma_range]
+        self.r_range = self.config.r_range
+        self.kappa_range = self.config.kappa_range
+        self.theta_range = self.config.theta_range
+        self.sigma_range = self.config.sigma_range
+        self.rho_range = self.config.rho_range
+        self.range_list = [self.r_range, self.kappa_range, self.theta_range, self.sigma_range, self.rho_range]
+        if self.dim > 1:
+            self.rhos_range = self.config.rhos_range
+            self.range_list.append(self.rhos_range)
 
     def initial_sampler(self, u_hat: tf.Tensor) -> tf.Tensor:
         initial_state = super().initial_sampler(u_hat)
@@ -679,6 +466,34 @@ class HestonModel(ItoProcessDriver):
         vol_diffusion   = vol_of_vol * sqrt_vol
         return tf.concat([asset_diffusion, vol_diffusion], axis=-1)
     
+    def corr_matrix_1d(self, state: tf.Tensor, u_hat: tf.Tensor):
+        batch = state.shape[0]
+        samples = state.shape[1]
+        actual_dim = state.shape[2]  
+        rho = tf.reshape(u_hat[:,4], [batch, 1, 1, 1])
+        rho_mat = tf.tile(rho, [1, samples, actual_dim, actual_dim])
+        i_mat = tf.eye(actual_dim, batch_shape=[batch, samples])
+        rho_diag = tf.linalg.diag(rho_mat[...,0])
+        corr = i_mat - rho_diag + rho_mat
+        return corr
+    
+    def corr_matrix_nd(self, state: tf.Tensor, u_hat: tf.Tensor):
+        pass
+    
+    def brownian_motion(self, state: tf.Tensor, u_hat: tf.Tensor):
+        dt = self.config.dt
+        batch_size = tf.shape(u_hat)[0]
+        samples = tf.shape(state)[1]
+        if self.dim == 1:
+            actual_dim = tf.shape(state)[2] #in SV model actual_dim = 2* dim =/= dim
+            corr = self.corr_matrix_1d(state, u_hat)
+            cholesky_matrix = tf.linalg.cholesky(corr)
+            white_noise = tf.random.normal([batch_size, samples, actual_dim], mean=0.0, stddev=tf.sqrt(dt))
+            state_noise =  tf.einsum('...ij,...j->...i', cholesky_matrix, white_noise)
+            return state_noise
+        else:
+            raise ValueError("Heston need to be 1 dimensional")
+    
     def drift_onestep(self, time_tensor: tf.Tensor, state_tensor: tf.Tensor, u_hat: tf.Tensor):
         """
         all inputs are [batch, sample, T, dim * 2] like
@@ -708,6 +523,24 @@ class HestonModel(ItoProcessDriver):
         diff_s = sqrt_v * s_tensor
         diff_v = vol_of_vol * sqrt_v
         return tf.concat([diff_s, diff_v], axis=-1)
+    
+    def split_uhat(self, u_hat: tf.Tensor):
+        r"""
+        Heston case, the parameters sampled has dimension batch_size + (5). where K=5
+        and batch_size = (B, M, N)
+        Then this function calculate the curve function based on parameter $r$ and $\theta$
+        return $r(t)$ and $\theta(t)$ on the given support grid and return the batch of moneyness (\kappa, \sigma, K)
+        Then Then return is a tuple of two tensors: (u_curve, u_param)
+        u_curve: batch_size + (time_steps, num_curves), u_param = batch_size + (3)
+        """
+        B_0 = tf.shape(u_hat)[0]
+        B_1 = tf.shape(u_hat)[1]
+        B_2 = tf.shape(u_hat)[2]
+        u_curve = tf.reshape(u_hat[...,:2], [B_0, B_1, B_2, 1, 2])
+        u_curve = tf.tile(u_curve, [1, 1, 1, self.config.sensors, 1])
+        u_param = u_hat[..., 2:]
+        return u_curve, u_param
+
         
 
     
