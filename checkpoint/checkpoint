@@ -1,2 +1,2 @@
-model_checkpoint_path: "GBM_Basket_10_partial_fixed_conv"
-all_model_checkpoint_paths: "GBM_Basket_10_partial_fixed_conv"
+model_checkpoint_path: "GBM_European_1_partial_fixed_dense"
+all_model_checkpoint_paths: "GBM_European_1_partial_fixed_dense"

@@ -1,0 +1,48 @@
+{
+    "eqn_config": {
+        "_comment": "float strike lookback option",
+        "sde_name": "GeometricBrownianMotion",
+        "option_name": "LookbackOption",
+        "solver_name": "MarkovianSolver",
+        "T": 1.0,
+        "dt": 0.01,
+        "dim": 3,
+        "time_steps": 100,
+        "strike_range":[1.0, 0.2],
+        "r_range": [0.005, 0.08],
+        "s_range": [0.01, 1.0],
+        "rho_range": [0.0, 0.0],
+        "x_init": 1.0,
+        "vol_init": 0.1,
+        "batch_size": 100,
+        "sample_size": 50,
+        "sensors": 20,
+        "initial_mode": "partial_fixed" 
+
+    },
+    "net_config": {
+        "pi": "true",
+        "branch_layers": [15, 15, 15, 15],
+        "trunk_layers": [15, 15, 15, 15],
+        "pi_layers": [15, 15],
+        "kernel_type": "conv",
+        "filters": 4,
+        "strides": 15,
+        "lr": 1e-3,
+        "epochs": 20,
+        "alpha": 100.0
+        
+    },
+    "val_config": {
+        "strike_range":[1.0, 0.05],
+        "r_range": [0.03, 0.05],
+        "s_range": [0.25, 0.75],
+        "rho_range": [0.0, 0.7],
+        "x_init": 1.0,
+        "vol_init": 0.1,
+        "batch_size": 100,
+        "sample_size": 100
+        
+    }
+
+}

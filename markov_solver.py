@@ -7,7 +7,7 @@ from base_solver import BaseBSDESolver
 from data_generators import DiffusionModelGenerator
 from options import EuropeanOption
 from typing import List, Tuple
-from sde import GeometricBrownianMotion, CEVModel, HestonModel
+from sde import GeometricBrownianMotion, CEVModel, HestonModel, TimeDependentGBM
 import time
 import os
 
@@ -72,11 +72,14 @@ class MarkovianSolver(BaseBSDESolver):
         loss = tf.reduce_mean(loss)
         return loss
 
-    def h_tf(self, t: tf.Tensor, x: tf.Tensor, y: tf.Tensor, param: tf.Tensor) -> tf.Tensor:  # get h function
+    def h_tf(self, t: tf.Tensor, x: tf.Tensor, y: tf.Tensor, u_hat: tf.Tensor) -> tf.Tensor:  # get h function
         """
         the driver term is r*y for MTG property
         """
-        r = tf.expand_dims(param[:, :, :, 0], -1)
+        if not isinstance(self.sde, TimeDependentGBM):
+            r = tf.expand_dims(u_hat[:, :, :, 0], -1)
+        else:
+            r = self.sde.drift_onestep(t, x, u_hat)
         return r * y
 
     def z_tf(self, t: tf.Tensor, x: tf.Tensor, grad: tf.Tensor, dw: tf.Tensor, u_hat: tf.Tensor) -> tf.Tensor:
@@ -94,6 +97,17 @@ class MarkovianSolver(BaseBSDESolver):
         else:
             v_tx = self.sde.diffusion_onestep(t, x, u_hat)
         z = tf.reduce_sum(v_tx * grad * dw, axis=-1, keepdims=True)
+        return z
+    
+    def z_hedge(self, t: tf.Tensor, x: tf.Tensor, u_hat: tf.Tensor) -> tf.Tensor:
+        grad = self.net_delta((t, x, u_hat))
+        if not isinstance(self.sde, HestonModel):
+            x = x[...,:self.dim]
+            grad = grad[...,:self.dim]
+            v_tx = self.sde.diffusion_onestep(t, x[...,:self.dim], u_hat)
+        else:
+            v_tx = self.sde.diffusion_onestep(t, x, u_hat)
+        z = tf.reduce_sum(v_tx * grad, axis=-1, keepdims=True)
         return z
 
     def g_tf(self, x: tf.Tensor, u_hat: tf.Tensor) -> tf.Tensor:

@@ -2,7 +2,8 @@ import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
 from abc import ABC, abstractmethod
-from function_space import DeepONet, DeepONetwithPI, DeepKernelONetwithPI
+from function_space import DeepKernelONetwithPI, DeepKernelONetwithoutPI
+from sde import HestonModel
 from typing import List, Tuple
 import time
 
@@ -26,22 +27,30 @@ class BaseBSDESolver(tf.keras.Model):
         self.filters = self.net_config.filters
         self.strides = self.net_config.strides
         self.pi_layers = self.net_config.pi_layers
-        if self.net_config.kernel_type == "dense":
-            self.no_net = DeepKernelONetwithPI(branch_layer=self.branch_layers, 
-                                                trunk_layer=self.trunk_layers, 
-                                                pi_layer=self.pi_layers, 
-                                                num_assets=self.dim, 
-                                                dense=True, 
-                                                num_outputs=6)
-        else:                                 
-            self.no_net = DeepKernelONetwithPI(branch_layer=self.branch_layers, 
-                                                trunk_layer=self.trunk_layers, 
-                                                pi_layer=self.pi_layers, 
-                                                num_assets=self.dim, 
-                                                dense=False, 
-                                                num_outputs=6,
-                                                filters=self.filters, 
-                                                strides=self.strides)
+        if self.net_config.pi == "true":
+            if self.net_config.kernel_type == "dense":
+                self.no_net = DeepKernelONetwithPI(branch_layer=self.branch_layers, 
+                                                    trunk_layer=self.trunk_layers, 
+                                                    pi_layer=self.pi_layers, 
+                                                    num_assets=self.dim, 
+                                                    dense=True, 
+                                                    num_outputs=6)
+            else:                                 
+                self.no_net = DeepKernelONetwithPI(branch_layer=self.branch_layers, 
+                                                    trunk_layer=self.trunk_layers, 
+                                                    pi_layer=self.pi_layers, 
+                                                    num_assets=self.dim, 
+                                                    dense=False, 
+                                                    num_outputs=6,
+                                                    filters=self.filters, 
+                                                    strides=self.strides)
+        else:
+            self.no_net = DeepKernelONetwithoutPI(branch_layer=self.branch_layers, 
+                                                    trunk_layer=self.trunk_layers, 
+                                                    dense=True, 
+                                                    num_outputs=6,
+                                                    filters=self.filters, 
+                                                    strides=self.strides)
 
         self.time_horizon = self.eqn_config.T
         self.batch_size = self.eqn_config.batch_size
@@ -58,8 +67,21 @@ class BaseBSDESolver(tf.keras.Model):
         u_c, u_p = self.sde.split_uhat(u)
         y = self.no_net((t, x, u_c, u_p))
         return y
+    
+    def net_delta(self, inputs: Tuple[tf.Tensor]) -> tf.Tensor:
+        t, x, u = inputs
+        u_c, u_p = self.sde.split_uhat(u)
+        y = self.no_net((t, x, u_c, u_p))
+        with tf.GradientTape(watch_accessed_variables=False) as tape:
+            tape.watch(x)
+            y = self.no_net((t, x, u_c, u_p))
+            delta = tape.gradient(y, x)
+        if not isinstance(self.sde, HestonModel):
+            z = delta[...,:self.dim]
+        else:
+            z = delta[...,:2 * self.dim]
+        return delta[...,:self.dim]
         
-
     def call(self, data: Tuple[tf.Tensor], training=None):
         raise NotImplementedError
 

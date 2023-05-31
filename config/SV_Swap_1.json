@@ -1,0 +1,53 @@
+{
+    "eqn_config": {
+        "_comment": "European call option under SV",
+        "sde_name": "HestonModel",
+        "option_name": "EuropeanSwap",
+        "solver_name": "MarkovianSolver",
+        "style":"call",
+        "T": 1.0,
+        "dt": 0.01,
+        "dim": 1,
+        "time_steps": 100,
+        "strike_range":[1.0, 0.2],
+        "r_range": [0.005, 0.08],
+        "theta_range": [0.09, 1.20],
+        "kappa_range": [0.05, 0.25],
+        "sigma_range": [0.01, 0.03],
+        "rho_range": [-0.8, 0.1],
+        "x_init": 1.0,
+        "vol_init": 0.1,
+        "batch_size": 200,
+        "sample_size": 50,
+        "sensors": 20,
+        "initial_mode": "partial_fixed"
+        
+
+    },
+    "net_config": {
+        "pi": "true",
+        "branch_layers": [15, 15, 15],
+        "trunk_layers": [15, 15, 15],
+        "pi_layers": [10, 10],
+        "kernel_type": "conv",
+        "filters": 4,
+        "strides": 15,
+        "lr": 5e-3,
+        "epochs": 20,
+        "alpha": 1.0
+        
+    },
+    "val_config": {
+        "strike_range":[1.0, 0.1],
+        "r_range": [0.03, 0.05],
+        "theta_range": [0.3, 0.9],
+        "kappa_range": [0.1, 0.15],
+        "sigma_range": [0.015, 0.02],
+        "rho_range": [-0.5, 0.0],
+        "x_init": 1.0,
+        "vol_init": 0.1,
+        "batch_size": 100,
+        "sample_size": 100
+        
+    }
+}

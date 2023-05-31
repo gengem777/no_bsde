@@ -1,16 +1,16 @@
 import numpy as np
 import tensorflow as tf
-from options import EuropeanOption, GeometricAsian, LookbackOption, EuropeanBasketOption
+from options import EuropeanOption, GeometricAsian, LookbackOption, EuropeanBasketOption, EuropeanSwap, TimeEuropean, TimeEuropeanBasketOption, BermudanBasketPut
 import math
 
-
+european_list = [EuropeanOption, EuropeanBasketOption, EuropeanSwap, TimeEuropean, TimeEuropeanBasketOption, BermudanBasketPut]
 class BaseGenerator(tf.keras.utils.Sequence):
     """ Create batches of random points for the network training. """
 
     def __init__(self, sde, config, option, N: int=100):
         """ Initialise the generator by saving the batch size. """
-        self.config = config.eqn_config
-        self.batch_size = config.eqn_config.batch_size
+        self.config = config
+        self.batch_size = config.batch_size
         self.option = option
         self.sde = sde
         self.params_model = self.sde.sample_parameters(N)
@@ -44,7 +44,7 @@ class DiffusionModelGenerator(BaseGenerator):
         params_batch_model = self.params_model[idx * self.batch_size:(idx + 1) * self.batch_size]
         params_batch_option = self.params_option[idx * self.batch_size:(idx + 1) * self.batch_size]
         x, dw = self.sde.sde_simulation(params_batch_model, self.config.sample_size)
-        if (type(self.option) != EuropeanOption) and (type(self.option) != EuropeanBasketOption):
+        if type(self.option) not in european_list:
             markov_var = self.option.markovian_var(x)
             x = tf.concat([x, markov_var], axis=-1) # x contains markov variable
         model_param = self.sde.expand_batch_inputs_dim(params_batch_model)

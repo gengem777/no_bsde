@@ -15,6 +15,7 @@ class DenseNet(tf.keras.Model):
 
     def __init__(self, num_layers: List[int]):
         super(DenseNet, self).__init__()
+        # self.activation = activation
         self.bn_layers = [
             tf.keras.layers.BatchNormalization(
                 momentum=0.99,
@@ -28,7 +29,7 @@ class DenseNet(tf.keras.Model):
                                                    kernel_initializer=tf.initializers.GlorotUniform(),
                                                    bias_initializer=tf.random_uniform_initializer(0.01, 0.05),
                                                    use_bias=True,
-                                                   activation=None, )
+                                                   activation=None)
                              for i in range(len(num_layers))]
 
     def call(self, x: tf.Tensor) -> tf.Tensor:
@@ -37,6 +38,7 @@ class DenseNet(tf.keras.Model):
             x = self.bn_layers[i](x)
             x = self.dense_layers[i](x)
             x = tf.nn.relu(x)
+        # x = self.dense_layers[-1](x)
         return x
 
 class DeepONet(tf.keras.Model):
@@ -148,13 +150,50 @@ class KernelOperator(DenseOperator):
         super(KernelOperator, self).__init__(num_outputs)
         self.filters = filters
         self.strides = strides
-        self.conv1d = tf.keras.layers.Conv1D(self.filters, self.strides, padding='valid', activation='relu')
+        self.conv1 = tf.keras.layers.Conv1D(self.filters, self.strides, padding='valid', activation='relu')
+        self.conv2 = tf.keras.layers.Conv1D(self.filters, 3, padding='valid', activation='relu')
     
     def call(self, x: tf.Tensor):
         # the x has shape batch_size + (time_steps, num_funcs), where batch_size is a 3-tuple
         # return: batch_size + (num_outputs)
-        x = self.conv1d(x)
+        x = self.conv1(x)
+        x = self.conv2(x)
         return super(KernelOperator, self).call(x)
+
+
+class DeepKernelONetwithoutPI(DeepONet):
+    def __init__(self, branch_layer: List[int], 
+                 trunk_layer: List[int],  
+                 dense: bool=False,
+                 num_outputs: int=6,
+                 filters: Optional[int]=None, 
+                 strides: Optional[int]=None):
+        super(DeepKernelONetwithoutPI, self).__init__(branch_layer, trunk_layer)
+        if dense:
+            self.kernelop = DenseOperator(num_outputs)
+        else:
+            self.kernelop = KernelOperator(filters, strides, num_outputs)
+    
+    def call(self, inputs: Tuple[tf.Tensor], training=None) -> tf.Tensor:
+        """
+        we first let the function pass the kernel operator and then we flatten the hidden state
+        and concat it with the input parameters and then we combine all of them into the brunch net
+        for trunk net, things are all inherented from the deepOnet with PI. 
+        The input is a tuple with 4 tensors (time, state, u_function, u_parmaters)
+        Each has the dimension:
+        t: batch_shape + (1)
+        state: batch_shape + (dim_markov)
+        u_function: batch_shape + (time_steps, num_functions)
+        u_parameters: batch_shape + (num_parameters)
+        """
+        time_tensor, state_tensor, u_func, u_par = inputs
+        latent_state = self.kernelop(u_func)
+        u_tensor = tf.concat([latent_state, u_par], axis=-1)
+        inputs_for_deeponetnopi = time_tensor, state_tensor, u_tensor
+        return super(DeepKernelONetwithoutPI, self).call(inputs_for_deeponetnopi)
+
+
+
 
 class DeepKernelONetwithPI(DeepONetwithPI):
     def __init__(self, branch_layer: List[int], 

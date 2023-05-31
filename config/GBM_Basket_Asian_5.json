@@ -3,6 +3,7 @@
         "_comment": "Asian basket option",
         "sde_name": "GeometricBrownianMotion",
         "option_name": "GeometricAsian",
+        "solver_name": "MarkovianSolver",
         "T": 1.0,
         "dt": 0.01,
         "dim": 5,
@@ -21,6 +22,7 @@
 
     },
     "net_config": {
+        "pi": "true",
         "branch_layers": [10, 10, 10],
         "trunk_layers": [10, 10, 10],
         "pi_layers": [20, 15],

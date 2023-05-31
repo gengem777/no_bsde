@@ -1,0 +1,49 @@
+{
+    "eqn_config": {
+        "_comment": "Bermudan Put option",
+        "sde_name": "GeometricBrownianMotion",
+        "option_name": "BermudanBasketPut",
+        "solver_name": "BermudanSolver",
+        "exercise_date": [0.4, 0.6],
+        "T": 1.0,
+        "dt": 0.01,
+        "dim": 3,
+        "time_steps": 100,
+        "strike_range":[2.0, 0.3],
+        "r_range": [0.005, 0.08],
+        "s_range": [0.01, 1.0],
+        "rho_range": [0.0, 0.0],
+        "x_init": 1.0,
+        "vol_init": 0.1,
+        "batch_size": 128,
+        "sample_size": 100,
+        "sensors": 50,
+        "initial_mode": "partial_fixed"
+    },
+
+    "net_config": {
+        "pi": "true",
+        "branch_layers": [15, 15, 15, 15],
+        "trunk_layers": [15, 15, 15, 15],
+        "pi_layers": [10, 10],
+        "kernel_type": "conv",
+        "filters": 1,
+        "strides": 10,
+        "lr": 5e-3,
+        "epochs": 10,
+        "alpha": 1.0
+        
+    },
+
+    "val_config": {
+        "strike_range":[1.6, 0.2],
+        "r_range": [0.03, 0.05],
+        "s_range": [0.1, 0.7],
+        "rho_range": [-0.0, 0.0],
+        "x_init": 1.0,
+        "vol_init": 0.1,
+        "batch_size": 100,
+        "sample_size": 100
+        
+    }
+}

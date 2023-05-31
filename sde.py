@@ -48,8 +48,8 @@ class ItoProcessDriver(ABC):
         # if dimension == 1:
         dist = tfp.distributions.TruncatedNormal(loc=self.x_init,
                                                         scale=self.x_init * 0.1,
-                                                        low=self.x_init* 0.8,
-                                                        high=self.x_init * 1.3)
+                                                        low=self.x_init* 0.05,
+                                                        high=self.x_init * 3.0)
         if self.initial_mode == 'random':
             state = tf.reshape(dist.sample(batch_size * samples * dimension), [batch_size, samples, dimension])
 
@@ -327,7 +327,145 @@ class GeometricBrownianMotion(ItoProcessDriver):
 
 
 class TimeDependentGBM(GeometricBrownianMotion):
-    pass
+    def __init__(self,
+                 config):
+        super().__init__(config)
+        self.config = config.eqn_config
+        self.initial_mode = self.config.initial_mode
+        self.x_init = self.config.x_init
+        self.r0_range = self.config.r0_range
+        self.r1_range = self.config.r1_range
+        self.r2_range = self.config.r2_range
+        self.s0_range = self.config.s0_range
+        self.beta_range = self.config.beta_range
+        self.range_list = [self.r0_range, self.r1_range, self.r2_range, self.s0_range, self.beta_range]
+        self.val_range_list = [self.val_config.r0_range, self.val_config.r1_range, self.val_config.r2_range, \
+                               self.val_config.s0_range, self.val_config.beta_range]
+        if self.config.dim != 1:
+            self.rho_range = self.config.rho_range
+            #if not self.config.iid:
+            self.range_list.append(self.rho_range)
+            self.val_range_list.append(self.val_config.rho_range)
+        
+        self.t_grid = tf.linspace(0., self.config.T, self.config.sensors)
+
+    def drift(self, time: tf.Tensor, state: tf.Tensor, u_hat: tf.Tensor) -> tf.Tensor:
+        """
+        Computes the drift of this stochastic process.
+        operator setting
+        mu: (batch_size, 1)
+        state: (batch_size, path_size, dim)
+        mu * state on a batch
+        return: batch_size, path_size, dim)
+        """
+        batch = tf.shape(u_hat)[0]
+        r0 = tf.reshape(u_hat[:, 0], [batch, 1, 1])
+        r1 = tf.reshape(u_hat[:, 1], [batch, 1, 1])
+        r2 = tf.reshape(u_hat[:, 2], [batch, 1, 1])
+        r = r0 + r1 * time + r2 * time ** 2 
+        return r * state
+
+    def diffusion(self, time: tf.Tensor, state: tf.Tensor, u_hat: tf.Tensor) -> tf.Tensor:
+        """
+        Computes the instantaneous diffusion of this stochastic process.
+
+        :param state : tf.Tensor
+            Contains samples from the stochastic process at a specific time.
+            Shape is [samples, self.dimension].
+        :param time : tf.Tensor
+            The current time; a scalar.
+
+        :return diffusion: tf.Tensor
+            The return is essentially a list of instantaneous diffusion matrices
+            for each sampled state input.
+            It is a tensor of shape [samples, self.dimension, self.dimension].
+
+        param_input (B, 1)
+        state (B, M, D)
+        return (B, M, D)
+        """
+        T = self.config.T
+        batch = u_hat.shape[0]
+        samples = state.shape[1]
+        s_0 = tf.reshape(u_hat[:, 3], [batch, 1, 1])
+        beta = tf.reshape(u_hat[:, 4], [batch, 1, 1])
+        sigma = s_0 * tf.exp(beta * (time - T))
+        sigma = tf.linalg.diag(tf.tile(sigma, [1, samples, self.dim]))
+        return tf.einsum('...ij,...j->...i', sigma, state)
+        
+    # def corr_matrix(self, state: tf.Tensor, u_hat: tf.Tensor):
+    #     batch = state.shape[0]
+    #     samples = state.shape[1]
+    #     if not self.dim == 1:
+    #         rho = tf.reshape(u_hat[:,5], [batch, 1, 1, 1])
+    #         rho_mat = tf.tile(rho, [1, samples, self.dim, self.dim])
+    #         i_mat = tf.eye(self.dim, batch_shape=[batch, samples])
+    #         rho_diag = tf.linalg.diag(rho_mat[...,0])
+    #         corr = i_mat - rho_diag + rho_mat
+    #     else:
+    #         corr = super(TimeDependentGBM, self).corr_matrix(state, u_hat)
+    #     return corr
+    
+    def drift_onestep(self, time_tensor: tf.Tensor, state_tensor: tf.Tensor, u_hat: tf.Tensor):
+        r0 = tf.expand_dims(u_hat[..., 0], -1)
+        r1 = tf.expand_dims(u_hat[..., 1], -1)
+        r2 = tf.expand_dims(u_hat[..., 2], -1)
+        r_t = r0 + r1 * time_tensor + r2 * time_tensor ** 2
+        return r_t
+
+
+    def diffusion_onestep(self, time_tensor: tf.Tensor, state_tensor: tf.Tensor, u_hat: tf.Tensor):
+        """
+        get \sigma(t,X) with shape (B,M,N,d)
+        in GBM \sigma(t,X) = \sigma * X
+        """
+        T = self.config.T
+        s_0 = tf.expand_dims(u_hat[..., 3], -1)
+        beta = tf.expand_dims(u_hat[..., 4], -1)
+        vol_tensor = s_0 * tf.exp(beta * (time_tensor - T))
+        return vol_tensor * state_tensor
+
+    def euler_onestep(self, time_tensor: tf.Tensor, state_tensor: tf.Tensor, dw: tf.Tensor, u_hat: tf.Tensor):
+        # assert self.diffusion(time, x_path, param).shape == dw.shape
+        r = self.drift_onestep(time_tensor, state_tensor, u_hat)
+        vs = self.diffusion_onestep(time_tensor, state_tensor, u_hat)
+        state_tensor_after_step = state_tensor + r * state_tensor * self.config.dt + vs * dw
+        return state_tensor_after_step
+    
+    def split_uhat(self, u_hat: tf.Tensor):
+        """
+        GBM case, the parameters sampled has dimension batch_size + (3). where K=3
+        and batch_size = (B, M, N)
+        Then this function calculate the curve function based on parameter $\mu$ and $\sigma$
+        return $\mu(t)$ and $\sigma(t)$ on the given support grid and return the batch of moneyness K
+        Then Then return is a tuple of two tensors: (u_curve, u_param)
+        u_curve: batch_size + (time_steps, num_curves), u_param = batch_size + (1)
+        """
+        # batch_shape = (u_hat.shape[0], u_hat.shape[1], u_hat.shape[2])
+        t = tf.reshape(self.t_grid, [1, 1, 1, self.config.sensors, 1])
+        B_0 = tf.shape(u_hat)[0]
+        B_1 = tf.shape(u_hat)[1]
+        B_2 = tf.shape(u_hat)[2]
+        t = tf.tile(t, [B_0, B_1, B_2, 1, 1])
+        r0 = tf.reshape(u_hat[...,0], [B_0, B_1, B_2, 1, 1])
+        r0 = tf.tile(r0, [1, 1, 1, self.config.sensors, 1])
+        r1 = tf.reshape(u_hat[...,1], [B_0, B_1, B_2, 1, 1])
+        r1 = tf.tile(r1, [1, 1, 1, self.config.sensors, 1])
+        r2 = tf.reshape(u_hat[...,2], [B_0, B_1, B_2, 1, 1])
+        r2 = tf.tile(r2, [1, 1, 1, self.config.sensors, 1])
+        r_curve = r0 + r1 * t * r2 * t ** 2
+        
+        T = self.config.T
+        s0 = tf.reshape(u_hat[...,3], [B_0, B_1, B_2, 1, 1])
+        s0 = tf.tile(s0, [1, 1, 1, self.config.sensors, 1])
+        beta = tf.reshape(u_hat[...,4], [B_0, B_1, B_2, 1, 1])
+        beta = tf.tile(beta, [1, 1, 1, self.config.sensors, 1])
+        s_curve = s0 * tf.exp(beta * (t - T))
+
+        u_curve = tf.concat([r_curve, s_curve], axis=-1)
+        u_param = u_hat[..., 4:]
+        return u_curve, u_param
+
 
 class CEVModel(ItoProcessDriver):
     """
@@ -419,14 +557,17 @@ class HestonModel(ItoProcessDriver):
         self.theta_range = self.config.theta_range
         self.sigma_range = self.config.sigma_range
         self.rho_range = self.config.rho_range
-        self.range_list = [self.r_range, self.kappa_range, self.theta_range, self.sigma_range, self.rho_range]
+        self.range_list = [self.r_range, self.theta_range, self.kappa_range, self.sigma_range, self.rho_range]
+        self.val_range_list = [self.val_config.r_range, self.val_config.theta_range, self.val_config.kappa_range,
+                                self.val_config.sigma_range, self.val_config.rho_range]
         if self.dim > 1:
             self.rhos_range = self.config.rhos_range
             self.range_list.append(self.rhos_range)
+            self.val_range_list.append(self.val_config.rhos_range)
 
     def initial_sampler(self, u_hat: tf.Tensor) -> tf.Tensor:
         initial_state = super().initial_sampler(u_hat)
-        new_state = initial_state * 0.08
+        new_state = initial_state * 0.1
         initial_value = tf.concat([initial_state, new_state], axis=-1)
         return initial_value
 
@@ -477,22 +618,39 @@ class HestonModel(ItoProcessDriver):
         corr = i_mat - rho_diag + rho_mat
         return corr
     
-    def corr_matrix_nd(self, state: tf.Tensor, u_hat: tf.Tensor):
-        pass
+    def cholesky_matrix_nd(self, state: tf.Tensor, u_hat: tf.Tensor):
+        batch = state.shape[0]
+        samples = state.shape[1]
+        rho_s = tf.reshape(u_hat[:,5], [batch, 1, 1, 1])
+        rho_s_mat = tf.tile(rho_s, [1, samples, self.dim, self.dim])
+        zeros_mat = tf.zeros([batch, samples, self.dim, self.dim])
+        i_mat = tf.eye(self.dim, batch_shape=[batch, samples])
+        rho_s_diag = tf.linalg.diag(rho_s_mat[...,0])
+        corr_s = i_mat - rho_s_diag + rho_s_mat
+        cholesky_s = tf.linalg.cholesky(corr_s)
+        rho_sv = tf.reshape(u_hat[:,4], [batch, 1, 1, 1])
+        rho_sv_mat = tf.tile(rho_sv, [1, samples, self.dim, self.dim])
+        rho_sv_diag = tf.linalg.diag(rho_sv_mat[...,0])
+
+        #concat block matrixs
+        a = tf.concat([cholesky_s, rho_sv_diag], axis=3)
+        b = tf.concat([zeros_mat, i_mat], axis=3)
+        return tf.concat([a, b], axis=2)
+
     
     def brownian_motion(self, state: tf.Tensor, u_hat: tf.Tensor):
         dt = self.config.dt
         batch_size = tf.shape(u_hat)[0]
         samples = tf.shape(state)[1]
+        actual_dim = tf.shape(state)[2] #in SV model actual_dim = 2* dim =/= dim
         if self.dim == 1:
-            actual_dim = tf.shape(state)[2] #in SV model actual_dim = 2* dim =/= dim
             corr = self.corr_matrix_1d(state, u_hat)
             cholesky_matrix = tf.linalg.cholesky(corr)
-            white_noise = tf.random.normal([batch_size, samples, actual_dim], mean=0.0, stddev=tf.sqrt(dt))
-            state_noise =  tf.einsum('...ij,...j->...i', cholesky_matrix, white_noise)
-            return state_noise
         else:
-            raise ValueError("Heston need to be 1 dimensional")
+            cholesky_matrix = self.cholesky_matrix_nd(state, u_hat)
+        white_noise = tf.random.normal([batch_size, samples, actual_dim], mean=0.0, stddev=tf.sqrt(dt))
+        state_noise =  tf.einsum('...ij,...j->...i', cholesky_matrix, white_noise)
+        return state_noise
     
     def drift_onestep(self, time_tensor: tf.Tensor, state_tensor: tf.Tensor, u_hat: tf.Tensor):
         """
