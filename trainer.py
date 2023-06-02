@@ -1,6 +1,7 @@
 import tensorflow as tf
 from base_solver import BaseBSDESolver
 from data_generators import DiffusionModelGenerator
+from longstaff_solver import LongStaffSolver
 from options import BaseOption
 from typing import List, Tuple
 from sde import ItoProcessDriver
