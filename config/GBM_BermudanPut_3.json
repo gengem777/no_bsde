@@ -12,11 +12,11 @@
         "strike_range":[2.0, 0.3],
         "r_range": [0.005, 0.08],
         "s_range": [0.01, 1.0],
-        "rho_range": [0.0, 0.0],
+        "rho_range": [0.0, 0.9],
         "x_init": 1.0,
         "vol_init": 0.1,
         "batch_size": 128,
-        "sample_size": 100,
+        "sample_size":  50,
         "sensors": 50,
         "initial_mode": "partial_fixed"
     },

@@ -89,7 +89,7 @@ class LongStaffSolver:
         self.exercise_index = self.option.exer_index #[40, 60] <=> [0, 1] len=2 (for index) is the time index for early exercise
         self.models = [SubONet(self.net_config.branch_layers, self.net_config.trunk_layers)   
                         for _ in range (len(self.exercise_index))]
-        self.num_batches = 100
+        self.num_batches = 300
         self.data_generator = DiffusionModelGenerator(self.sde, self.eqn_config, self.option, self.num_batches)
         
     def loss_fn(self, x: tf.Tensor, u: tf.Tensor, idx: int, training=None):
@@ -113,14 +113,15 @@ class LongStaffSolver:
             payoff = tf.maximum(continuation_value, early_exercise_payoff)
             target = tf.stop_gradient(discount_factor * payoff)
         index_now = self.exercise_index[idx]
+        itm_index = tf.where(self.g_tf(x[:, :, :index_now, :], u[:, :, :index_now, :]) > 0) #get itm path
+        # tf.print(tf.shape(itm_index)[0])
         value_now = self.models[idx]((x[:, :, index_now, :], u[:, :, index_now, :]), training)
-        delta = value_now - target
+        delta = tf.gather_nd(value_now - target, itm_index)
         loss = tf.reduce_mean(tf.where(tf.abs(delta) < DELTA_CLIP, tf.square(delta),
                                     2 * DELTA_CLIP * tf.abs(delta) - DELTA_CLIP ** 2))
         dv = tf.reduce_mean(tf.abs(delta))
         return loss, dv
 
-    @tf.function 
     def train_step(self, x: tf.Tensor, u: tf.Tensor, idx: int):
         
         with tf.GradientTape() as tape:
@@ -137,15 +138,16 @@ class LongStaffSolver:
             decay_steps=200,
             decay_rate=0.9)    
             self.optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule, epsilon=1e-6)
+            tf_train_step = tf.function(self.train_step)
             start_time = time.time()
             for epoch in range(self.net_config.epochs):
                 for (i, data) in enumerate(self.data_generator):
                     _, x, _, u = data[0]
-                    loss, dv = self.train_step(x, u, idx)
+                    loss, dv = tf_train_step(x, u, idx)
                     eclapsed_time = time.time() - start_time
                     if i%10==0:
-                        print(f"In {epoch+1}-th epoch the MAE of the net {idx+1} is {dv}, loss is {loss}, time eclapse {eclapsed_time}\n")
-
+                        print(f"In {epoch+1}-th epoch the MAE of the net {idx+1} is {dv: 2f}, loss is {loss: 2f}, time eclapse {eclapsed_time: 2f}\n")
+            del tf_train_step
 
     def g_tf(self, x: tf.Tensor, u_hat: tf.Tensor) -> tf.Tensor:
         payoff = self.option.payoff(x, u_hat)
@@ -172,6 +174,9 @@ if __name__ == '__main__':
         sde = getattr(eqn, config.eqn_config.sde_name)(config)
         option = getattr(opts, config.eqn_config.option_name)(config)
         solver = LongStaffSolver(sde, option, config)
+        tf.config.run_functions_eagerly(False)
         solver.train()
+        cont_values = solver.models
+        
     
     main("GBM", "BermudanPut", 3)
