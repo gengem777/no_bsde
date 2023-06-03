@@ -30,7 +30,7 @@
         "filters": 1,
         "strides": 10,
         "lr": 5e-3,
-        "epochs": 10,
+        "epochs": 2,
         "alpha": 1.0
         
     },

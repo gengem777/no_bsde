@@ -38,13 +38,13 @@ class ItoProcessDriver(ABC):
     def get_batch_size(self, u_hat: tf.Tensor):
         return tf.shape(u_hat)[0]
 
-    def initial_sampler(self, u_hat: tf.Tensor) -> tf.Tensor:
+    def initial_sampler(self, u_hat: tf.Tensor, samples: int) -> tf.Tensor:
         """
         Initial sampling of the asset price
         """
         batch_size = self.get_batch_size(u_hat)
         dimension = self.config.dim
-        samples = self.config.sample_size
+        # samples = self.config.sample_size
         # if dimension == 1:
         dist = tfp.distributions.TruncatedNormal(loc=self.x_init,
                                                         scale=self.x_init * 0.1,
@@ -168,7 +168,7 @@ class ItoProcessDriver(ABC):
         time_steps = self.config.time_steps
         state_process = tf.TensorArray(tf.float32, size=time_steps)
         brownian_increments = tf.TensorArray(tf.float32, size=time_steps - 1)
-        state = self.initial_sampler(u_hat)
+        state = self.initial_sampler(u_hat, samples)
 
         time = tf.constant(0.0)
         state_process = state_process.write(0, state)

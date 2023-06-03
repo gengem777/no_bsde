@@ -89,7 +89,7 @@ class LongStaffSolver:
         self.exercise_index = self.option.exer_index #[40, 60] <=> [0, 1] len=2 (for index) is the time index for early exercise
         self.models = [SubONet(self.net_config.branch_layers, self.net_config.trunk_layers)   
                         for _ in range (len(self.exercise_index))]
-        self.num_batches = 300
+        self.num_batches = 10
         self.data_generator = DiffusionModelGenerator(self.sde, self.eqn_config, self.option, self.num_batches)
         
     def loss_fn(self, x: tf.Tensor, u: tf.Tensor, idx: int, training=None):
@@ -152,6 +152,42 @@ class LongStaffSolver:
     def g_tf(self, x: tf.Tensor, u_hat: tf.Tensor) -> tf.Tensor:
         payoff = self.option.payoff(x, u_hat)
         return payoff
+    
+    def lsm_price(self, u: tf.Tensor, sample_num=10000): #long staff benchmark with NN
+        assert tf.shape(u)[0]==1
+        batch = tf.shape(u)[0]
+        steps = self.eqn_config.time_steps
+        x, _ = self.sde.sde_simulation(u[:,:-1], sample_num)
+        u_m = u[:,:-1]
+        u_o = u[:,-1:]
+        u_m = tf.reshape(u_m, [batch, 1, 1, u_m.shape[-1]])
+        u_m = tf.tile(u_m, [1, sample_num, steps, 1])
+        u_o = tf.reshape(u_o, [batch, 1, 1, u_o.shape[-1]])
+        u_o = tf.tile(u_o, [1, sample_num, steps, 1])
+        u = tf.concat([u_m, u_o], -1)
+        T = self.eqn_config.T
+        r = tf.expand_dims(u[:, :, 0, 0], -1)
+        # x, _ = self.sde.sde_simulation(u[:,:-1], sample_num) #(1, M, N, d)
+        payoff = self.g_tf(x, u)
+        for idx in reversed(range(len(self.exercise_index))):
+            if idx == len(self.exercise_index)-1:
+                discount_factor = tf.exp(-r * (T - self.exercise_date[idx])) 
+            else:
+                discount_factor = tf.exp(-r * (self.exercise_date[idx+1] - self.exercise_date[idx]))
+            index_now = self.exercise_index[idx]
+            payoff_plus = discount_factor * payoff #V_{t+1}
+            continuation_value = self.models[idx]((x[:, :, index_now, :], u[:, :, index_now, :]), training=False)
+            exercise_value = self.g_tf(x[:, :, :index_now, :], u[:, :, :index_now, :])
+            payoff = tf.where(exercise_value-continuation_value>=0, exercise_value, payoff_plus)
+        discount_factor = tf.exp(-r * (self.exercise_date[idx]))
+        value = tf.reduce_mean(discount_factor * payoff, axis=1)
+        x_init = tf.reduce_mean(x[:,:,0,:], axis=1)
+        euro_value = tf.reduce_mean(tf.exp(-r * T) * self.g_tf(x, u), axis=1)
+        return value, euro_value, x_init
+            
+
+
+
 
 
 if __name__ == '__main__':
@@ -177,6 +213,8 @@ if __name__ == '__main__':
         tf.config.run_functions_eagerly(False)
         solver.train()
         cont_values = solver.models
+        u = tf.constant([[0.05, 0.4, 0.2, 1.0]])
+        print(solver.lsm_price(u, 10000))
         
     
     main("GBM", "BermudanPut", 3)
