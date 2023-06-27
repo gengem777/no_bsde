@@ -12,7 +12,7 @@ import tensorflow as tf
 import sde as eqn
 import options as opts
 import solvers as sls
-from trainer import BSDETrainer
+from trainer import BSDETrainer, BermudanTrainer
 
 sde_list = ["GBM", "TGBM", "SV", "CEV", "SVJ"]
 option_list = ["European", "EuropeanPut", "Lookback", "Asian", "Basket", "BasketnoPI", "Swap", "TimeEuropean", "BermudanPut"]
@@ -33,7 +33,10 @@ def main(sde_name: str, option_name: str, dim: int=1):
     sde = getattr(eqn, config.eqn_config.sde_name)(config)
     option = getattr(opts, config.eqn_config.option_name)(config)
     solver = getattr(sls, config.eqn_config.solver_name)(sde, option, config)
-    trainer = BSDETrainer(solver)
+    if config.eqn_config.solver_name == "BermudanSolver":
+        trainer = BermudanTrainer(solver)
+    else:
+        trainer = BSDETrainer(solver)
     
     print(f'begin train {option_name} under {sde_name} {dim} dimensions {kernel_type} {initial_mode}')
     checkpoint_path = f'./checkpoint/{sde_name}_{option_name}_{dim}_{initial_mode}_{kernel_type}'

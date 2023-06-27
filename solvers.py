@@ -2,6 +2,7 @@ import numpy as np
 import tensorflow as tf
 from abc import ABC
 from function_space import DeepONet, DeepKernelONetwithPI, DeepKernelONetwithoutPI
+from longstaff_solver import LongStaffSolver
 from sde import HestonModel, TimeDependentGBM
 from typing import List, Tuple
 
@@ -149,10 +150,6 @@ class MarkovianSolver(BaseBSDESolver):
                 "loss interior": loss_int,
                 "loss terminal": loss_tml}
     
-    def loss(self, inputs):
-        loss, _, _ = self(inputs[0])
-        loss = tf.reduce_mean(loss)
-        return loss
 
     def h_tf(self, t: tf.Tensor, x: tf.Tensor, y: tf.Tensor, u_hat: tf.Tensor) -> tf.Tensor:  # get h function
         """
@@ -207,6 +204,10 @@ class BermudanSolver(MarkovianSolver):
     def __init__(self, sde, option, config):
         super(BermudanSolver, self).__init__(sde, option, config)
         self.exer_index = self.option.exer_index
+        self.num_tasks = 0
+
+    def reset_task(self):
+        self.num_tasks = 0
 
     def call(self, data: Tuple[tf.Tensor], training=None) -> Tuple[tf.Tensor]:
         """
@@ -216,7 +217,7 @@ class BermudanSolver(MarkovianSolver):
         :return: value (B, M, (T-1), 1), gradient_x (B, M, (T-1), D)
         """
         t, x, dw, u = data
-        N = self.eqn_config.time_steps
+        num_steps = self.eqn_config.time_steps
         y = self.g_tf(x, u) # (B, M, 1)
         with tf.GradientTape(watch_accessed_variables=False) as tape:
             tape.watch(x)
@@ -225,30 +226,35 @@ class BermudanSolver(MarkovianSolver):
                                             # First self.dim entry is the grad w.r.t X_t
         z = self.z_tf(t[:,:,:-1], x[:,:,:-1], grad[:,:,:-1], dw, u[:,:,:-1]) # (B, M, N, 1)
         y_values = tf.TensorArray(tf.float32, size=self.eqn_config.time_steps)
-        y_values = y_values.write(N-1, y)
-        for n in reversed(range(N-1)):
+        y_values = y_values.write(num_steps-1, y)
+        for n in reversed(range(num_steps - 1)):
             y = y - self.h_tf(t[:,:,n+1,:], x[:,:,n+1,:], y, u[:,:,n+1,:]) - z[:,:,n,:]
             if n in self.exer_index:
-                y = tf.maximum(y, self.option.early_payoff(x[:,:,n,:], u[:,:,n,:]))
+                if self.num_tasks == 0:
+                    df = self.discount_factor(t[:,:,n,:], u[:,:,n,:])
+                    y = df * self.g_tf(x, u)
+                    y = tf.maximum(y, self.option.early_payoff(x[:,:,n,:], u[:,:,n,:]))
+                else:
+                    y = tf.maximum(y, self.option.early_payoff(x[:,:,n,:], u[:,:,n,:]))
             y_values = y_values.write(n, y)
         y_values = y_values.stack()
         y_values = tf.transpose(y_values, perm=[1, 2, 0, 3])
-        loss_variance = tf.reduce_mean(tf.math.reduce_variance(y, axis=1))
+        # loss_variance = tf.reduce_mean(tf.math.reduce_variance(y, axis=1))
         loss_interior = tf.reduce_mean(tf.reduce_sum((f - y_values)**2, axis=2))
-        loss = self.alpha * loss_variance + loss_interior
+        #loss = self.alpha * loss_variance + loss_interior
+        loss = loss_interior
         loss_terminal = tf.reduce_mean((f[:,:,-1,:] - y_values[:,:,-1,:])**2)
-        return loss, loss_interior, loss_variance, loss_terminal
+        return loss, loss_interior, loss_terminal
 
     @tf.function
     def train_step(self, inputs: Tuple[tf.Tensor]) -> dict:
         with tf.GradientTape() as tape:
             with tf.name_scope('calling_model'):
-                loss, loss_interior, loss_variance, loss_terminal = self(inputs[0])
+                loss, loss_interior, loss_terminal = self(inputs[0])
             grad = tape.gradient(loss, self.trainable_variables)
         self.optimizer.apply_gradients(zip(grad, self.trainable_variables))
         return {"loss": loss,
                 "loss interior": loss_interior,
-                "loss var": loss_variance,
                 "loss tml": loss_terminal}
     
     def h_tf(self, t: tf.Tensor, x: tf.Tensor, y: tf.Tensor, u_hat: tf.Tensor) -> tf.Tensor:  # get h function
@@ -267,6 +273,12 @@ class BermudanSolver(MarkovianSolver):
             r = self.sde.drift_onestep(t, x, u_hat) # [B, M, 1]
             r = tf.squeeze(r, axis=2)
         return r * y
+    
+    def discount_factor(self, t: tf.Tensor, u_hat: tf.Tensor):
+        T = self.eqn_config.T
+        r = tf.expand_dims(u_hat[:, :, 0], -1)
+        df = tf.exp(-r * (T-t))
+        return df
 
     def z_tf(self, t: tf.Tensor, x: tf.Tensor, grad: tf.Tensor, dw: tf.Tensor, u_hat: tf.Tensor) -> tf.Tensor:
         """
@@ -291,4 +303,89 @@ class BermudanSolver(MarkovianSolver):
 
 
 
+class BermudanTwoStepSolver(MarkovianSolver): 
+    def __init__(self, sde, option, config): 
+        super(BermudanTwoStepSolver, self).__init__(sde, option, config)
+        self.exer_index = self.option.exer_index
+        solver = LongStaffSolver(sde, option, config)
+        tf.config.run_functions_eagerly(False)
+        print("first step training")
+        solver.train()
+        print("first step training end, we have value operators")
+        self.subnets = solver.models
+        self.exercise_index = self.option.exer_index
+
+    def loss_subinterval(self, data: Tuple[tf.Tensor], idx: int):
+        """
+        This method calculate the European loss in a subinterval of two consecutive early-exercise dates
+        the idx is the idx of the early-exercise date. when idx attain its maximum value, this reduces to the European loss whose
+        terminal payoff is just exercise_value; Otherwise, this is the European loss with terminal payoff of max(continuation_value, exercise_value)
+        """
+        t, x, dw, u = data
+        num_steps = tf.shape(x)[2]
+        loss_interior = 0.0
+        u_now = u[:, :, :-1, :]
+        u_pls = u[:, :, 1:, :]
+        x_now = x[:, :, :-1, :]
+        x_pls = x[:, :, 1:, :]
+        t_now = t[:, :, :-1, :]
+        t_pls = t[:, :, 1:, :]
+        if idx == len(self.subnets):
+            target = self.g_tf(x, u)
+        else:
+            target = tf.maximum(self.g_tf(x, u), tf.stop_gradient(self.subnets[idx](x[:,:,-1,:], u[:,:,-1,:])))
+        with tf.GradientTape(watch_accessed_variables=False) as tape:
+            tape.watch(x_now)
+            f_now = self.net_forward((t_now, x_now, u_now))
+            grad = tape.gradient(f_now, x_now) # grad wrt whole Markovian variable (X_t, M_t) 
+                                            # First self.dim entry is the grad w.r.t X_t
+        f_pls = self.net_forward((t_pls, x_pls, u_pls))
+        for n in range(num_steps-1):
+            V_pls = f_pls[:, :, n:, :]
+            V_now = f_now[:, :, n:, :]
+            V_hat = V_now - self.h_tf(t_now[:,:, n:,:], x_now[:,:, n:,:], V_now, u_now[:,:, n:,:]) * self.dt + self.z_tf(t_now[:,:, n:,:], x_now[:,:, n:,:], 
+                                                                            grad[:,:, n:,:], dw[:,:, n:,:], u_now[:,:, n:,:])
+            tele_sum = tf.reduce_sum(V_pls - V_hat, axis=2)
+            loss_interior += tf.reduce_mean(tf.square(tele_sum + target - f_pls[:, :, -1, :]))
+        loss_tml = tf.reduce_mean(tf.square(f_pls[:, :, -1, :] - target))
+        loss = self.alpha * loss_tml + loss_interior
+        return loss
     
+    def call(self, data: Tuple[tf.Tensor], training=None) -> Tuple[tf.Tensor]:
+        """
+        :param t: time B x M x (T-1) x 1
+        :param x: state B x M x (T-1) x D
+        :param  param: B x K ->(repeat) B x M x (T-1) x K
+        :return: value (B, M, (T-1), 1), gradient_x (B, M, (T-1), D)
+        """
+        t, x, dw, u = data
+        loss = 0.0
+        for idx in range(len(self.subnets) + 1):
+            if idx == 0:
+                t = t[:,:,:self.exercise_index[idx],:]
+                x = x[:,:,:self.exercise_index[idx],:]
+                u = u[:,:,:self.exercise_index[idx],:]
+                dw = dw[:,:,:self.exercise_index[idx]-1,:]
+            
+            elif idx == len(self.subnets):
+                t = t[:,:,self.exercise_index[idx-1]:,:]
+                x = x[:,:,self.exercise_index[idx-1]:,:]
+                u = u[:,:,self.exercise_index[idx-1]:,:]
+                dw = dw[:,:,self.exercise_index[idx-1]-1,:]
+            
+            else:
+                t = t[:,:,self.exercise_index[idx-1]:self.exercise_index[idx],:]
+                x = x[:,:,self.exercise_index[idx-1]:self.exercise_index[idx],:]
+                u = u[:,:,self.exercise_index[idx-1]:self.exercise_index[idx],:]
+                dw = dw[:,:,self.exercise_index[idx-1]:self.exercise_index[idx]-1,:]
+            
+            sub_data = t, x, dw, u
+            loss += self.loss_subinterval(sub_data, idx)
+        return loss
+
+
+
+    
+
+
+

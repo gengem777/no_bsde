@@ -23,14 +23,14 @@
 
     "net_config": {
         "pi": "true",
-        "branch_layers": [15, 15, 15],
-        "trunk_layers": [15, 15, 15],
-        "pi_layers": [10, 10],
+        "branch_layers": [150, 150, 150],
+        "trunk_layers": [150, 150, 150],
+        "pi_layers": [100, 100, 100],
         "kernel_type": "dense",
         "filters": 1,
         "strides": 10,
         "lr": 5e-3,
-        "epochs": 20,
+        "epochs": 50,
         "alpha": 1.0
         
     },
@@ -43,7 +43,7 @@
         "x_init": 1.0,
         "vol_init": 0.1,
         "batch_size": 100,
-        "sample_size": 100
+        "sample_size": 50
         
     }
 }

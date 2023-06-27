@@ -444,8 +444,7 @@ class BermudanBasketPut(BaseOption):
         """
         k = tf.expand_dims(u_hat[:, :, 0, -1], axis=-1) # (B, M, 1)
         temp = tf.reduce_mean(x[:, :, -1, :], axis=-1, keepdims=True) # (B, M, 1)
-        K = k * self.config.x_init
-        return tf.nn.relu(K - temp)
+        return tf.nn.relu(k - temp)
     
     def early_payoff(self, x: tf.Tensor, u_hat: tf.Tensor, **kwargs):
         """
@@ -456,8 +455,7 @@ class BermudanBasketPut(BaseOption):
         """
         temp = temp = tf.reduce_mean(x, axis=-1, keepdims=True) # [B, M, 1]
         k = tf.expand_dims(u_hat[:, :, -1], axis=-1) # [B, M, 1]
-        K = k * self.config.x_init
-        return tf.nn.relu(K - temp)
+        return tf.nn.relu(k - temp)
     
     def exact_price(self, t: tf.Tensor, x: tf.Tensor, params):
         """

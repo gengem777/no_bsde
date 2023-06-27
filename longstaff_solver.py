@@ -89,7 +89,7 @@ class LongStaffSolver:
         self.exercise_index = self.option.exer_index #[40, 60] <=> [0, 1] len=2 (for index) is the time index for early exercise
         self.models = [SubONet(self.net_config.branch_layers, self.net_config.trunk_layers)   
                         for _ in range (len(self.exercise_index))]
-        self.num_batches = 10
+        self.num_batches = 200
         self.data_generator = DiffusionModelGenerator(self.sde, self.eqn_config, self.option, self.num_batches)
         
     def loss_fn(self, x: tf.Tensor, u: tf.Tensor, idx: int, training=None):
@@ -106,7 +106,7 @@ class LongStaffSolver:
             target = discount_factor * payoff
         
         else:
-            discount_factor = tf.exp(-r * (self.exercise_date[idx+1] - self.exercise_date[idx]))
+            discount_factor = tf.exp(-r * (self.exercise_date[idx+1] - self.exercise_date[idx])) #simply constant discount
             index_future = self.exercise_index[idx+1]
             early_exercise_payoff = self.g_tf(x[:, :, :index_future, :], u[:, :, :index_future, :])
             continuation_value = self.models[idx+1]((x[:, :, index_future, :], u[:, :, index_future, :]), training=False)
@@ -177,8 +177,10 @@ class LongStaffSolver:
             index_now = self.exercise_index[idx]
             payoff_plus = discount_factor * payoff #V_{t+1}
             continuation_value = self.models[idx]((x[:, :, index_now, :], u[:, :, index_now, :]), training=False)
+            # continuation_value = payoff_plus
             exercise_value = self.g_tf(x[:, :, :index_now, :], u[:, :, :index_now, :])
             payoff = tf.where(exercise_value-continuation_value>=0, exercise_value, payoff_plus)
+            print(tf.where(exercise_value-continuation_value>=0).shape[0])
         discount_factor = tf.exp(-r * (self.exercise_date[idx]))
         value = tf.reduce_mean(discount_factor * payoff, axis=1)
         x_init = tf.reduce_mean(x[:,:,0,:], axis=1)
@@ -212,9 +214,17 @@ if __name__ == '__main__':
         solver = LongStaffSolver(sde, option, config)
         tf.config.run_functions_eagerly(False)
         solver.train()
-        cont_values = solver.models
-        u = tf.constant([[0.05, 0.4, 0.2, 1.0]])
-        print(solver.lsm_price(u, 10000))
+        u = [tf.constant([[0.05, 0.4, 0.2, 1.6]]),
+             tf.constant([[0.03, 0.4, 0.2, 1.6]]), 
+             tf.constant([[0.07, 0.4, 0.2, 1.6]]),
+             tf.constant([[0.05, 0.2, 0.2, 1.6]]),
+             tf.constant([[0.05, 0.6, 0.2, 1.6]]),
+             tf.constant([[0.05, 0.4, 0.4, 1.6]]),
+             tf.constant([[0.05, 0.4, 0.6, 1.6]]),
+             tf.constant([[0.05, 0.4, 0.2, 1.4]]),
+             tf.constant([[0.05, 0.4, 0.2, 1.8]])]
+        for a in u:
+            print(solver.lsm_price(a, 100000))
         
     
     main("GBM", "BermudanPut", 3)

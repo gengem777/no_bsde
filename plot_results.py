@@ -40,8 +40,8 @@ def get_useful_series(sde_name: str, option_name: str, dim: int=1, seed: int=0, 
     mode = config.eqn_config.initial_mode
     
     
-    u_model = sde.sample_parameters(N=20, training=training)
-    u_option = option.sample_parameters(N=20, training=training)
+    u_model = sde.sample_parameters(N=2, training=training)
+    u_option = option.sample_parameters(N=2, training=training)
     u_hat = tf.concat([u_model, u_option], axis=-1)
     x, _ = sde.sde_simulation(u_hat, config.val_config.sample_size)
     time_stamp = tf.range(0, config.eqn_config.T, config.eqn_config.dt)
@@ -53,7 +53,7 @@ def get_useful_series(sde_name: str, option_name: str, dim: int=1, seed: int=0, 
     print(config.net_config.kernel_type)
 
 
-    model.no_net.load_weights(f"checkpoint/{sde_name}_{option_name}_{dim}_{mode}_{config.net_config.kernel_type}_pi")
+    model.no_net.load_weights(f"checkpoint/{sde_name}_{option_name}_{dim}_{mode}_{config.net_config.kernel_type}")
     if type(option) == LookbackOption or type(option) == GeometricAsian:
         x_m = option.markovian_var(x)
         x_arg = tf.concat([x, x_m], axis=-1)
@@ -61,7 +61,7 @@ def get_useful_series(sde_name: str, option_name: str, dim: int=1, seed: int=0, 
         x_arg = x
     print(f"asset's shepe: {x_arg.shape}")
     y_pred = model.net_forward((t, x_arg, u_hat))
-    # z_pred = tf.squeeze(model.z_hedge(t, x_arg, u_hat)).numpy()
+    z_pred = tf.squeeze(model.z_hedge(t, x_arg, u_hat)).numpy()
     y_pred = tf.squeeze(y_pred).numpy()
     t_test = tf.squeeze(t).numpy()
     x_mc = tf.squeeze(np.mean(x_arg[:,:,:,:dim], axis=-1)).numpy()
@@ -73,10 +73,10 @@ def get_useful_series(sde_name: str, option_name: str, dim: int=1, seed: int=0, 
 
     if (sde_name in ["GBM", "TGBM", "SV"]) and (option_name in ["European", "EuropeanPut","Swap", "TimeEuropean", "BermudanPut"]) and (dim in[1, 3, 5, 10]):
         y_true = option.exact_price(t, x, u_hat)
-        # z_true = tf.squeeze(option.exact_delta(t, x, u_hat)).numpy()
+        z_true = tf.squeeze(option.exact_delta(t, x, u_hat)).numpy()
         y_true = tf.squeeze(y_true).numpy()
     
-        return y_pred, x_mc, t_test, u, y_true, _, _
+        return y_pred, x_mc, t_test, u, y_true, z_pred, z_true
     
     if (sde_name in [ "SV"]) and (option_name in [ "Swap"]) and (dim != 1):
         y_true = option.exact_price(t, x, u_hat)
@@ -92,12 +92,12 @@ def get_useful_series(sde_name: str, option_name: str, dim: int=1, seed: int=0, 
         return y_pred, x_mc, t_test, u, y_true, _, _
 
     
-    elif sde_name == "GBM" and option_name == "Basket_wo_PI" and dim != 1:
+    elif sde_name == "GBM" and option_name == "BasketnoPI" and dim != 1:
         y_true = option.exact_price(t, x_arg, u_hat)
         y_true = tf.squeeze(y_true).numpy()
         x_mc = tf.reduce_mean(x_arg, axis=-1)
         x_mc = tf.squeeze(x_mc).numpy()
-        return y_pred, x_mc, t_test, u, y_true
+        return y_pred, x_mc, t_test, u, y_true, _, _
     
     elif sde_name == "GBM" and option_name == "Basket" and dim != 1:
         y_true = option.exact_price(t, x_arg, u_hat)
@@ -110,7 +110,15 @@ def get_useful_series(sde_name: str, option_name: str, dim: int=1, seed: int=0, 
         return y_pred, x_mc, t_test, u, mc_p.numpy()
 
 
-
-data = get_useful_series("GBM", "Basket", 10, 0, False)     
+# sde_l = ["GBM"]
+# opt_l = ["Basket", "BasketnoPI"]
+# datas = []
+# for sde in sde_l:
+#     for option in opt_l:
+#         data = get_useful_series(sde, option, 10, 0, False) 
+#         datas.append(data)
+# data = get_useful_series("GBM", "Basket", 10, 0, True) 
+# data1 = get_useful_series("GBM", "BasketnoPI", 10, 0, True)     
 # print(data[1][0, :, 0]) 
+data = get_useful_series("GBM", "European", 1, 0, False) 
 print(data[0].shape, data[4].shape)
