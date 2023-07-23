@@ -33,6 +33,7 @@ def main(sde_name: str, option_name: str, dim: int=1):
     sde = getattr(eqn, config.eqn_config.sde_name)(config)
     option = getattr(opts, config.eqn_config.option_name)(config)
     solver = getattr(sls, config.eqn_config.solver_name)(sde, option, config)
+    print(solver)
     if config.eqn_config.solver_name == "BermudanSolver":
         trainer = BermudanTrainer(solver)
     else:

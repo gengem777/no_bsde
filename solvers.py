@@ -116,17 +116,25 @@ class MarkovianSolver(BaseBSDESolver):
         N = self.eqn_config.time_steps
         loss_interior = 0.0
         u_now = u_hat[:, :, :-1, :]
-        u_pls = u_hat[:, :, 1:, :]
+        # u_pls = u_hat[:, :, 1:, :]
         x_now = x[:, :, :-1, :]
-        x_pls = x[:, :, 1:, :]
+        # x_pls = x[:, :, 1:, :]
         t_now = t[:, :, :-1, :]
-        t_pls = t[:, :, 1:, :]
+        # t_pls = t[:, :, 1:, :]
         with tf.GradientTape(watch_accessed_variables=False) as tape:
             tape.watch(x_now)
-            f_now = self.net_forward((t_now, x_now, u_now))
-            grad = tape.gradient(f_now, x_now) # grad wrt whole Markovian variable (X_t, M_t) 
+            f = self.net_forward((t, x, u))
+            grad = tape.gradient(f, x) # grad wrt whole Markovian variable (X_t, M_t) 
                                             # First self.dim entry is the grad w.r.t X_t
-        f_pls = self.net_forward((t_pls, x_pls, u_pls))
+        f_now = f[:, :, :-1, :]
+        f_pls = f[:, :, 1:, :]
+        grad = grad[:,:,:-1,:]
+        # with tf.GradientTape(watch_accessed_variables=False) as tape:
+        #     tape.watch(x_now)
+        #     f_now = self.net_forward((t_now, x_now, u_now))
+        #     grad = tape.gradient(f_now, x_now) # grad wrt whole Markovian variable (X_t, M_t) 
+        #                                     # First self.dim entry is the grad w.r.t X_t
+        # f_pls = self.net_forward((t_pls, x_pls, u_pls))
         for n in range(N-1):
             V_pls = f_pls[:, :, n:, :]
             V_now = f_now[:, :, n:, :]
@@ -192,7 +200,64 @@ class MarkovianSolver(BaseBSDESolver):
     def g_tf(self, x: tf.Tensor, u_hat: tf.Tensor) -> tf.Tensor:
         payoff = self.option.payoff(x, u_hat)
         return payoff
+
+
+class FeynmanKacSolver(BaseBSDESolver):
+    """
+    This is the class to construct the train step of the FeynmanKac loss function proposed in Berner, at,el 2020, the data is generated from three
+    external classes: the sde class which yield the data of input parameters. the option class which yields the
+    input function data and give the payoff function and exact option price.
+    """
+    def __init__(self, sde, option, config):
+        super(FeynmanKacSolver, self).__init__(sde, option, config)
     
+    def call(self, data: Tuple[tf.Tensor], training=None) -> Tuple[tf.Tensor]:
+        """
+        :param t: time B x M x (T-1) x 1
+        :param x: state B x M x (T-1) x D
+        :param  param: B x K ->(repeat) B x M x (T-1) x K
+        :return: value (B, M, (T-1), 1), gradient_x (B, M, (T-1), D)
+        """
+        t, x, dw, u = data
+        f = self.net_forward((t, x, u))
+        target = tf.tile(tf.expand_dims(self.g_tf(x, u), axis=-1), [1, 1, tf.shape(x)[2], 1])
+        df = self.discount_rate(t, x, u)
+        loss = tf.reduce_mean((f - df * target) ** 2)
+        return loss
+    
+    @tf.function
+    def train_step(self, inputs: Tuple[tf.Tensor]) -> dict:
+        with tf.GradientTape() as tape:
+            with tf.name_scope('calling_model'):
+                loss = self(inputs[0])
+            grad = tape.gradient(loss, self.trainable_variables)
+        self.optimizer.apply_gradients(zip(grad, self.trainable_variables))
+        return {"loss": loss}
+    
+    def discount_rate(self, t: tf.Tensor, x: tf.Tensor, u_hat: tf.Tensor) -> tf.Tensor:  # get h function
+        """
+        this function calculate the discount factor on a batch of data, for each t, it yields
+        the value of \int_t^T r_s ds in general. 
+        If rate is a constant, it can be given by e^{-r(T-t)}.
+        If rate is time dependent, it is given by e^{-\int_t^T r_s ds}.
+        """
+        if not isinstance(self.sde, TimeDependentGBM):
+            r = tf.expand_dims(u_hat[:, :, :, 0], -1)
+            time_terminal = self.eqn_config.T
+            df = tf.exp(-r * (time_terminal - t))
+        else:
+            r = self.sde.drift_onestep(t, x, u_hat)
+            dt = self.eqn_config.dt
+            r_int = tf.math.cumsum(r, axis=2, reverse=True)
+            df = tf.exp(-r_int * dt)
+        return df
+
+    def g_tf(self, x: tf.Tensor, u_hat: tf.Tensor) -> tf.Tensor:
+        payoff = self.option.payoff(x, u_hat)
+        return payoff
+
+
+
 
 class BermudanSolver(MarkovianSolver):
     """

@@ -107,12 +107,12 @@ class EuropeanOption(BaseOption):
         if training:
             strike_range = self.strike_range
             num_params = int(N * self.config.batch_size)
-            m = tf.math.maximum(tf.random.normal([num_params, 1], strike_range[0], strike_range[1]), strike_range[0] * 0.05)
+            m = tf.math.maximum(tf.random.uniform([num_params, 1], strike_range[0], strike_range[1]), strike_range[0] * 0.05)
             return m
         else:
             strike_range = self.val_config.strike_range
             num_params = int(N * self.val_config.batch_size)
-            m = tf.math.maximum(tf.random.normal([num_params, 1], strike_range[0], strike_range[1]), strike_range[0] * 0.08)
+            m = tf.math.maximum(tf.random.uniform([num_params, 1], strike_range[0], strike_range[1]), strike_range[0] * 0.08)
             return m
 
 
